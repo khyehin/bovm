@@ -1,0 +1,572 @@
+/* -------------------------------------------------------
+   Premium Soft Neutral Theme (Admin + Login)
+   High-end, Clean, Bright, Minimal
+-------------------------------------------------------- */
+
+:root {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --primary: #6b7a99;
+  --primary-hover: #56627d;
+  --primary-soft: #eef1f6;
+
+  --text: #1f2937;
+  --muted: #8a94a6;
+  --border: #e5e7eb;
+
+  --sidebar-bg-top: #ffffff;
+  --sidebar-bg-bottom: #ffffff;
+}
+
+/* global reset */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+
+/* ---------------------- topbar ---------------------- */
+.admin-topbar {
+  height: 60px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+  padding: 0 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.topbar-logo {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.topbar-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+.topbar-app-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #4b5563;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar-user {
+  font-size: 13px;
+  color: #4b5563;
+}
+
+.btn-topbar {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--primary);
+  text-decoration: none;
+  font-size: 12px;
+}
+
+/* 三条线按钮 */
+.topbar-toggle {
+  border: 1px solid var(--border);
+  background: #ffffff;
+  border-radius: 999px;
+  width: 32px;
+  height: 32px;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------------------- layout ---------------------- */
+
+.admin-shell {
+  display: flex;
+  min-height: calc(100vh - 60px);
+}
+
+/* sidebar */
+.admin-sidebar {
+  width: 230px;
+  background: #ffffff;
+  border-right: 1px solid var(--border);
+  padding: 20px 16px;
+  transition: width 0.25s ease, padding 0.25s ease;
+}
+
+.sidebar-collapsed .admin-sidebar {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+}
+
+/* main */
+.admin-main {
+  flex: 1;
+  padding: 26px 30px;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-main-inner {
+  width: 100%;
+}
+
+/* ---------------------- sidebar menu ---------------------- */
+
+.sidebar-menu {
+  display: block;
+}
+
+.sidebar-section {
+  margin-bottom: 18px;
+}
+
+.sidebar-section-title {
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.sidebar-link {
+  display: block;
+  padding: 8px 12px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 13px;
+  color: #374151;
+}
+
+.sidebar-link:hover {
+  background: var(--primary-soft);
+}
+
+.sidebar-link.active {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+/* ---------------------- card ---------------------- */
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 18px;
+}
+
+.admin-card {
+  background: var(--panel);
+  padding: 18px 22px;
+  border-radius: 14px;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.04);
+  margin-bottom: 20px;
+}
+
+.admin-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.admin-card-elevated {
+  border-radius: 18px;
+  padding: 28px 32px;
+  background: #ffffff;
+  box-shadow: 0 12px 45px rgba(0,0,0,0.06);
+}
+
+.admin-card-narrow {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* ---------------------- table ---------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.table th {
+  text-align: left;
+  padding: 10px;
+  background: var(--primary-soft);
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---------------------- buttons ---------------------- */
+
+.btn {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 13px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+
+.btn-sm {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-light {
+  background: #ffffff;
+  color: var(--primary);
+  border: 1px solid var(--border);
+}
+
+/* ---------------------- alerts ---------------------- */
+
+.alert-success {
+  background: #ecfdf5;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.alert-error {
+  background: #ffe6e6;
+  color: #b71c1c;
+  padding: 10px;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+/* ---------------------- form layout ---------------------- */
+
+.form-page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.form-page-eyebrow {
+  font-size: 11px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.form-page-title {
+  font-size: 22px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.form-page-subtitle {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.form-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.form-section {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.form-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
+}
+
+.form-section-header {
+  margin-bottom: 12px;
+}
+
+.form-section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.form-section-desc {
+  font-size: 13px;
+  color: #6b7280;
+}
+
+.form-grid {
+  display: grid;
+  gap: 14px 20px;
+}
+
+.form-grid-1 { grid-template-columns: minmax(0, 1fr); }
+.form-grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.form-grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.form-grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+
+.field-static {
+  font-size: 13px;
+  padding: 6px 0;
+  color: #111827;
+}
+
+/* ---------------------- Inputs ---------------------- */
+
+.form-control {
+  width: 100%;
+  height: 40px;
+  padding: 9px 13px;
+  background: #f9fafb;
+  border: 1px solid #e0e4eb;
+  border-radius: 12px;
+  font-size: 13px;
+  color: #1f2937;
+  transition: all 0.18s ease;
+  outline: none;
+}
+
+.form-control:hover {
+  background: #ffffff;
+  border-color: #d4d9e2;
+}
+
+.form-control:focus {
+  background: #ffffff;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(107, 122, 153, 0.25);
+}
+
+textarea.form-control {
+  min-height: 90px;
+  height: auto;
+  resize: vertical;
+}
+
+select.form-control {
+  background:
+    #f9fafb
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="%239ca3af"><path d="M4 6l4 4 4-4z"/></svg>')
+    no-repeat right 12px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+
+select.form-control:hover {
+  background-color: #ffffff;
+}
+
+select.form-control:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(107, 122, 153, 0.25);
+}
+
+/* ---------------------- override readonly (important) ---------------------- */
+
+/* 全局 readonly → warning 但我们要覆写 drp-display-input */
+.form-control[readonly],
+.form-control:disabled {
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+/* 但 date-range-display 要可点击！ */
+.drp-display-input {
+  cursor: pointer !important;
+  color: #111827 !important;
+  background: #ffffff !important;
+}
+
+/* ---------------------- footer ---------------------- */
+
+.admin-footer {
+  border-top: 1px solid var(--border);
+  background: #ffffff;
+  padding: 16px 22px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.admin-footer-inner {
+  text-align: center;
+}
+
+/* 如果你的 topbar 不是 fixed/sticky，就不要预留顶部空位 */
+.admin-body { padding-top: 0 !important; }
+.admin-shell { margin-top: 0 !important; padding-top: 0 !important; }
+
+/* ======================================================
+   Date Range Picker (Airbnb style)
+====================================================== */
+
+.date-filter-wrapper {
+  position: relative;
+  max-width: 280px;
+}
+
+.drp-container {
+  position: absolute;
+  z-index: 50;
+  margin-top: 4px;
+  display: none;
+  gap: 10px;
+}
+
+.drp-wrapper {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 10px 12px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  width: 260px;
+  font-size: 12px;
+}
+
+.drp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.drp-month-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.drp-nav {
+  border: none;
+  background: #f3f4f6;
+  border-radius: 999px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+}
+
+.drp-week-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  text-align: center;
+  font-size: 10px;
+  color: #9ca3af;
+}
+
+.drp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.drp-day {
+  border: none;
+  background: none;
+  border-radius: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+  cursor: pointer;
+  color: #111827;
+}
+
+.drp-day.is-out-month { color: #d1d5db; }
+.drp-day.is-today { box-shadow: 0 0 0 1px #9ca3af inset; }
+.drp-day.in-range { background: #e5e7eb; }
+.drp-day.is-start,
+.drp-day.is-end {
+  background: var(--primary);
+  color: #ffffff !important;
+}
+
+.drp-day:hover {
+  background: #e5e7eb;
+}
+
+/* quick bar */
+.drp-quick-bar {
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.12);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 140px;
+}
+
+.drp-quick-item {
+  border: none;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.drp-quick-item:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+/* Mobile 友好：小屏幕时上下排布 */
+@media (max-width: 640px) {
+  .drp-container {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .drp-wrapper,
+  .drp-quick-bar {
+    width: 100%;
+  }
+}
+

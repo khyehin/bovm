@@ -1,0 +1,170 @@
+/* ===== 外层 Wrapper ===== */
+.date-filter-wrapper {
+  position: relative;
+  max-width: 260px;
+}
+
+/* 输入框 */
+.drp-display-input {
+  cursor: pointer;
+  background-color: #ffffff;
+}
+
+/* ===== 弹出层容器 ===== */
+.drp-container {
+  position: absolute;
+  z-index: 9999;
+  top: calc(100% + 6px);
+  left: 0;
+  margin-top: 4px;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.18);
+  border-radius: 8px;
+  padding: 10px;
+
+  /* 默认隐藏，由 JS 控制 style.display */
+  display: none;
+
+  /* Desktop 下我们希望是：日历在左，quick 在右 */
+  min-width: 360px;
+}
+
+/* 🔥 关键修复：
+   当 JS 把 style="display: block" 加上去时，
+   我们用 CSS 强制改成 flex，这样 quick 就会在右边，不会掉到下面
+*/
+.drp-container[style*="display: block"] {
+  display: flex !important;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+/* ===== 日历区域 ===== */
+.drp-wrapper {
+  min-width: 220px;
+}
+
+/* 月份标题 */
+.drp-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.drp-month-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.drp-nav {
+  border: none;
+  background: #f3f4f6;
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.drp-nav:hover {
+  background: #e5e7eb;
+}
+
+/* 星期标题行 */
+.drp-week-row {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  font-size: 10px;
+  text-align: center;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+/* 日期格子 */
+.drp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  font-size: 11px;
+}
+
+/* 不知道你 JS 生成的 class 名字，这里用通用选择器 */
+.drp-grid > div {
+  padding: 4px 0;
+  text-align: center;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.drp-grid > div.is-empty {
+  cursor: default;
+}
+
+.drp-grid > div:not(.is-empty):hover {
+  background: #e5e7eb;
+}
+
+.drp-grid > div.is-start,
+.drp-grid > div.is-end {
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.drp-grid > div.is-in-range {
+  background: #bfdbfe;
+  color: #1f2937;
+}
+
+/* ===== Quick 区域（桌面：在右边） ===== */
+.drp-quick-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 120px;
+}
+
+.drp-quick-item {
+  border: none;
+  background: #f3f4f6;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.drp-quick-item:hover {
+  background: #e5e7eb;
+}
+
+/* ===== 手机版：Quick 自动掉到下面 ===== */
+@media (max-width: 640px) {
+
+  /* 这里针对“打开状态”的弹窗做布局调整 */
+  .drp-container[style*="display: block"] {
+    flex-direction: column;
+    width: 100%;
+    max-width: 310px;
+    min-width: auto;
+  }
+
+  .drp-wrapper {
+    width: 100%;
+  }
+
+  .drp-quick-bar {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .drp-quick-item {
+    flex: 1 0 calc(50% - 6px);
+    text-align: center;
+  }
+}

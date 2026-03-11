@@ -1,0 +1,229 @@
+/* Basic page */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  color: #111827;
+  margin: 0;
+  padding: 0;
+  background: #f3f4f6;
+}
+
+.receipt-shell {
+  max-width: 820px;
+  margin: 16px auto;
+  background: #ffffff;
+  padding: 24px 32px 28px;
+  border-radius: 12px;
+  box-shadow: 0 15px 40px rgba(15, 23, 42, 0.12);
+}
+
+/* Header */
+.receipt-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.logo-box img {
+  max-height: 60px;
+  width: auto;
+  display: block;
+}
+
+.receipt-title-block {
+  text-align: right;
+}
+
+.receipt-title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.receipt-meta {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 4px;
+}
+
+/* Sections */
+.section {
+  margin-top: 16px;
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: #6b7280;
+  letter-spacing: .06em;
+  margin-bottom: 6px;
+}
+
+.two-col {
+  display: flex;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+/* Meta tables */
+.meta-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.meta-table td {
+  padding: 2px 0;
+  vertical-align: top;
+}
+
+.meta-label {
+  width: 90px;
+  color: #6b7280;
+}
+
+.meta-value {
+  font-weight: 500;
+}
+
+/* Amount summary */
+.amount-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.amount-summary-table th,
+.amount-summary-table td {
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+}
+
+.amount-summary-table th {
+  background: #f9fafb;
+  text-align: left;
+  font-size: 12px;
+}
+
+.amount-summary-table td.text-right {
+  text-align: right;
+}
+
+/* Badges */
+.badge {
+  display: inline-block;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #4b5563;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+
+.badge-status {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #166534;
+}
+
+/* Payments */
+.payments-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.payments-table th,
+.payments-table td {
+  border: 1px solid #e5e7eb;
+  padding: 5px 6px;
+}
+
+.payments-table th {
+  background: #f9fafb;
+  text-align: left;
+}
+
+.text-right {
+  text-align: right;
+}
+
+.no-payments {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* Notes */
+.notes-box {
+  border-radius: 8px;
+  border: 1px dashed #d1d5db;
+  padding: 8px 10px;
+  font-size: 12px;
+  margin-top: 6px;
+  white-space: pre-line;
+}
+
+/* Signature */
+.signature-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 32px;
+  gap: 48px;
+}
+
+.signature-block {
+  flex: 1 1 0;
+  font-size: 12px;
+}
+
+.signature-line {
+  margin-top: 60px;
+  border-top: 1px solid #9ca3af;
+  padding-top: 4px;
+  text-align: center;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.chop-box {
+  text-align: center;
+  margin-top: 8px;
+}
+
+.chop-box img {
+  max-height: 80px;
+  width: auto;
+  opacity: 0.95;
+}
+
+/* Print button */
+.receipt-print-btn {
+  font-size: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+/* Print mode */
+@media print {
+  body {
+    background: #ffffff;
+  }
+  .receipt-shell {
+    margin: 0;
+    box-shadow: none;
+    border-radius: 0;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
