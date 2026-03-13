@@ -99,10 +99,10 @@ $sumMonth = $st->fetch() ?: [];
 $total_in_month  = (float)($sumMonth['total_in_normal'] ?? 0);
 $total_out_month = (float)($sumMonth['total_out_normal'] ?? 0);
 
-// Pending（本月 invoice 未付）
+// Pending（ALL invoice 未付）
 $pending_month = 0.0;
 try {
-  $st = $pdo->prepare("
+  $st = $pdo->query("
     SELECT
       t.id,
       COALESCE(t.order_total,0) AS order_total,
@@ -112,11 +112,10 @@ try {
     WHERE t.txn_type = 'IN'
       AND (t.is_contra IS NULL OR t.is_contra = 0)
       AND (t.status IS NULL OR t.status <> 'CONFIRMED')
+      AND UPPER(TRIM(COALESCE(t.doc_flow_status,''))) <> 'REJECTED'
       AND (UPPER(COALESCE(t.in_kind,'')) = '' OR UPPER(COALESCE(t.in_kind,'')) = 'INVOICE')
-      AND DATE(COALESCE(t.txn_date, t.created_at)) BETWEEN :d1 AND :d2
     GROUP BY t.id
   ");
-  $st->execute([':d1' => $monthStart, ':d2' => $monthEnd]);
   while ($r = $st->fetch()) {
     $order  = (float)($r['order_total'] ?? 0);
     $paid   = (float)($r['paid_total'] ?? 0);
@@ -216,6 +215,7 @@ try {
     SELECT COUNT(*) AS c
     FROM customer_txn
     WHERE status IN ('DRAFT','PENDING')
+      AND UPPER(TRIM(COALESCE(doc_flow_status,''))) <> 'REJECTED'
       AND (
            (COALESCE(sig_customer,'') = '')
         OR (customer_signed_at IS NULL)
@@ -228,6 +228,7 @@ try {
       SELECT COUNT(*) AS c
       FROM customer_txn
       WHERE status IN ('DRAFT','PENDING')
+        AND UPPER(TRIM(COALESCE(doc_flow_status,''))) <> 'REJECTED'
     ");
     $pendingSigCount = (int)($st->fetchColumn() ?? 0);
   } catch (Throwable $e2) {

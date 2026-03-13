@@ -402,6 +402,7 @@ foreach ($rows as $r) {
   if ($tType !== 'IN') continue;
 
   if ((int)($r['is_contra'] ?? 0) === 1) continue;
+  if (strtoupper(trim((string)($r['doc_flow_status'] ?? ''))) === 'REJECTED') continue;
   if (strtoupper(trim((string)($r['status'] ?? ''))) === 'CONFIRMED') continue;
 
   $tid    = (int)($r['id'] ?? 0);
@@ -524,6 +525,9 @@ include __DIR__ . '/../include/header.php';
           </a>
           <a href="<?= h(url('admin/customers/txn_edit.php?customer_id=' . $cid)) ?>" class="btn btn-primary">
             <?= h(tt('admin.customer_txn.list.new_btn', '+ New Transaction')) ?>
+          </a>
+          <a href="<?= h(url('admin/customers/invoices.php?customer_id=' . $cid)) ?>" class="btn btn-light">
+            <?= h('Invoices / Quotations') ?>
           </a>
         </div>
       </div>
@@ -921,8 +925,14 @@ include __DIR__ . '/../include/header.php';
               // ✅ 状态显示层修正（勾签名但没签完 => 强制 PENDING）
               $displayStatus = strtoupper(trim((string)($r['status'] ?? 'PENDING')));
 
+              // ✅ Quotation 被 Reject：优先显示 REJECTED（不要被签名/付款逻辑覆盖成 PENDING）
+              $docFlowStatus = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+              if ($docFlowStatus === 'REJECTED') {
+                $displayStatus = 'REJECTED';
+              }
+
               // ✅ 只有当 DB 不是 CONFIRMED 时，才用签名/付款逻辑去推导显示
-              if ($displayStatus !== 'CONFIRMED' && $tType === 'IN' && !$isContra) {
+              if ($displayStatus !== 'CONFIRMED' && $displayStatus !== 'REJECTED' && $tType === 'IN' && !$isContra) {
 
                 $needRecv = !empty($r['sign_receive']); // 我方签
                 $needPay  = !empty($r['sign_payer']);   // 客户签
@@ -1019,7 +1029,7 @@ include __DIR__ . '/../include/header.php';
                 <td style="text-align:right;"><?= h($displayCurrency) ?> <?= number_format((float)$displayAmount, 2) ?></td>
 
                 <td style="text-align:right;">
-                  <?php if ($tType === 'IN' && !$isContra && $unpaid > 0.0001): ?>
+                  <?php if ($displayStatus !== 'REJECTED' && $tType === 'IN' && !$isContra && $unpaid > 0.0001): ?>
                     <?= h($displayCurrency) ?> <?= number_format($unpaid, 2) ?>
                   <?php else: ?>
                     –
@@ -1029,6 +1039,8 @@ include __DIR__ . '/../include/header.php';
                 <td>
                   <?php if ($displayStatus === 'CONFIRMED'): ?>
                     <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#ecfdf5; color:#166534;"><?= h(tt('admin.customer_txn.status.confirmed', 'CONFIRMED')) ?></span>
+                  <?php elseif ($displayStatus === 'REJECTED'): ?>
+                    <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#fee2e2; color:#b91c1c;"><?= h(tt('admin.customer_txn.status.rejected', 'REJECTED')) ?></span>
                   <?php elseif ($displayStatus === 'PENDING'): ?>
                     <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#dbeafe; color:#1d4ed8;"><?= h(tt('admin.customer_txn.status.pending', 'PENDING')) ?></span>
                   <?php elseif ($displayStatus === 'SENT'): ?>
@@ -1051,12 +1063,15 @@ include __DIR__ . '/../include/header.php';
                         <?= h(tt('admin.common.edit', 'Edit')) ?>
                       </a>
 
-                      <!-- ✅ 关键：只要是 IN invoice 都给 IN Receipt -->
+                      <!-- ✅ 只要是 IN invoice 都给 IN Receipt / Invoice 编辑入口 -->
                       <?php
                       $tType = strtoupper(trim((string)($r['txn_type'] ?? '')));
                       $ik    = detect_in_kind($r); // INVOICE / BONUS / RETURN
                       ?>
                       <?php if ($tType === 'IN' && $ik === 'INVOICE'): ?>
+                        <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
+                          <?= h(tt('admin.customer_txn.list.action_invoice_edit', 'View / edit IN invoice')) ?>
+                        </a>
                         <a href="<?= h(url('admin/customers/txn_receipt_in.php?id=' . (int)$r['id'])) ?>" class="actions-menu-item">
                           <?= h(tt('admin.customer_txn.list.action_receipt_in', 'IN Receipt')) ?>
                         </a>

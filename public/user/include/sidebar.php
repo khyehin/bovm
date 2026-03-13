@@ -12,6 +12,9 @@ if (($u['role'] ?? '') !== 'CUSTOMER') {
     exit('Forbidden');
 }
 
+$cust = function_exists('current_customer') ? current_customer() : null;
+$custCat = (int)($cust['category_id'] ?? 0);
+
 $active_nav = $active_nav ?? 'dashboard';
 
 if (!function_exists('h')) {
@@ -48,6 +51,22 @@ if (!function_exists('h')) {
          class="sidebar-link <?= $active_nav === 'txns' ? 'active' : '' ?>">
         <?= h(t('portal.sidebar.txns', [], 'Transactions / Reports')) ?>
       </a>
+
+      <a href="<?= h(url('user/txn/invoices.php')) ?>"
+         class="sidebar-link <?= $active_nav === 'invoices' ? 'active' : '' ?>">
+        <?= h(t('portal.sidebar.invoices', [], 'Invoices / Quotations')) ?>
+      </a>
+
+      <?php if ($custCat === 1): ?>
+      <a href="<?= h(url('user/company1/customers.php')) ?>"
+         class="sidebar-link <?= $active_nav === 'company1_customers' ? 'active' : '' ?>">
+        Company1 · Customers
+      </a>
+      <a href="<?= h(url('user/company1/invoices.php')) ?>"
+         class="sidebar-link <?= $active_nav === 'company1_invoices' ? 'active' : '' ?>">
+        Company1 · Invoices
+      </a>
+      <?php endif; ?>
     </div>
 
     <!-- Settings -->

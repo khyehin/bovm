@@ -58,6 +58,10 @@ $hasT = function_exists('t');
          class="sidebar-link<?= nav_active('/admin/customers/list.php', $currentPath) ?>">
         <?= h($hasT ? t('admin.nav.customer_list', [], 'Customer List') : 'Customer List') ?>
       </a>
+      <a href="<?= h(url('admin/customers/invoices.php')) ?>"
+         class="sidebar-link<?= nav_active('/admin/customers/invoices.php', $currentPath) ?>">
+        <?= h($hasT ? t('admin.nav.customer_invoices', [], 'Invoices') : 'Invoices') ?>
+      </a>
     </div>
 
     <!-- BANK (新模块) -->

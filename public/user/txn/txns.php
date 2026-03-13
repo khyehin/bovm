@@ -371,13 +371,19 @@ include __DIR__ . '/../include/header.php';
           $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
           if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
 
-          // Pending：只有 admin IN + INVOICE
+          // Pending：只有 admin IN + INVOICE，且非 REJECTED
           $pendingVal = 0.0;
           if ($adminType === 'IN' && $inKind === 'INVOICE') {
               $orderTotal = (float)($r['order_total'] ?? $amount);
               $paidRaw    = (float)($paidRawByTxn[$tid] ?? 0);
+
               $pendingVal = max(0.0, $orderTotal - $paidRaw);
-              if (($r['status'] ?? '') === 'CONFIRMED') $pendingVal = 0.0;
+
+              // 已确认或流程已 REJECTED：不再显示 pending
+              $docFlowStat = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+              if (($r['status'] ?? '') === 'CONFIRMED' || $docFlowStat === 'REJECTED') {
+                  $pendingVal = 0.0;
+              }
           }
 
           $rowCurrency = $r['currency'] ?: $currency;

@@ -291,7 +291,16 @@ $baseCurrency = (string)($txn['currency'] ?: 'MYR');
 $origAmount   = (float)($txn['order_total'] ?? 0);
 $invoiceNo    = (string)($txn['invoice_no'] ?? '');
 
-// ---- signature switches ----
+// ---- signature & chop switches ----
+// sign_mode: SIGN_AND_CHOP（默认）/ CHOP_ONLY / SIGN_ONLY（预留）
+$txnCols = table_columns($pdo, 'customer_txn');
+$signMode = 'SIGN_AND_CHOP';
+if (isset($txnCols['sign_mode'])) {
+  $m = strtoupper(trim((string)($txn['sign_mode'] ?? '')));
+  if (in_array($m, ['SIGN_AND_CHOP', 'CHOP_ONLY', 'SIGN_ONLY'], true)) {
+    $signMode = $m;
+  }
+}
 $signReceive = !empty($txn['sign_receive']); // 我们签（客户页一般只是显示）
 $signPayer   = !empty($txn['sign_payer']);   // 客户签（客户页要签的是这个）
 
@@ -301,6 +310,12 @@ $canPaySig = isset($payCols['receiver_signature_image']) && isset($payCols['paye
 // logo / chop
 $logoUrl = url('admin/assets/img/vmlogo.png');
 $chopUrl = url('admin/assets/img/vmchop.png');
+$company = function_exists('get_company') ? get_company() : ['name' => 'VISION MIX SDN BHD', 'reg_no' => '1622729-U', 'address' => ['LOT 3A-02A, 4TH FLOOR ENDAH PARADE,', 'NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,', '57000 KUALA LUMPUR'], 'phone' => '', 'email' => ''];
+$companyName = (string)($company['name'] ?? '');
+$companyRegNo = (string)($company['reg_no'] ?? '');
+$companyAddress = (array)($company['address'] ?? []);
+$companyPhone = (string)($company['phone'] ?? '');
+$companyEmail = (string)($company['email'] ?? '');
 
 // ---- all payments (all receipts) ----
 $st = $pdo->prepare("
@@ -319,10 +334,20 @@ if ($paymentId > 0) {
   foreach ($allPays as $p) {
     if ((int)$p['id'] === $paymentId) { $payment = $p; break; }
   }
-  if (!$payment) { http_response_code(404); exit('Payment not found'); }
 }
 
-$showAll = ($paymentId <= 0);
+// user 版本：永远显示「单张 receipt」，如果没有指定 payment_id，就默认用最后一张（最新一笔）
+if (!$payment) {
+  if ($allPays) {
+    $payment = $allPays[count($allPays) - 1];
+    $paymentId = (int)($payment['id'] ?? 0);
+  } else {
+    http_response_code(404);
+    exit('No payments for this invoice.');
+  }
+}
+
+$showAll = false;
 
 // ======== POST: save signature (customer only, single receipt mode) ========
 $errors = [];
@@ -378,18 +403,88 @@ include __DIR__ . '/../include/header.php';
   html, body { margin:0!important; padding:0!important; background:#fff!important; }
   body * { visibility:hidden!important; }
   #receipt-print-area, #receipt-print-area * { visibility:visible!important; }
-  #receipt-print-area { position:fixed!important; left:0!important; top:0!important; right:0!important; width:100%!important; }
+  #receipt-print-area {
+    position: static!important;
+    width: 100%!important;
+    margin: 0!important;
+    padding: 0!important;
+  }
+
+  .admin-main,
+  .admin-main-inner,
+  .admin-card {
+    margin:0!important;
+    padding:0!important;
+  }
 
   .admin-header, .admin-sidebar, .admin-footer, .form-page-header, .form-section { display:none!important; }
-  .receipt-shell { border:none!important; box-shadow:none!important; }
-
-  .single-receipt-block { page-break-after: always; break-after: page; }
-  .single-receipt-block:last-child { page-break-after: auto; break-after: auto; }
 
   .no-print { display:none!important; visibility:hidden!important; }
+
+  .single-receipt-block {
+    margin: 0!important;
+    padding: 0!important;
+    page-break-after: always;
+    break-after: page;
+  }
+  .single-receipt-block:first-child {
+    margin-top: 0!important;
+    padding-top: 0!important;
+  }
+  .single-receipt-block:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+
+  .receipt-shell {
+    border: none!important;
+    box-shadow: none!important;
+    page-break-inside: avoid!important;
+    width: 100%!important;
+    max-width: none!important;
+    margin: 0!important;
+    padding: 16px 20px!important;
+    border-radius: 0!important;
+  }
+
+  /* print: no signature boxes, use underline style */
+  .receipt-sig-box {
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+  }
+  .receipt-sig-box::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    border-top: 1px solid #000;
+  }
 }
 
-.receipt-shell { border:1px solid #e5e7eb; border-radius:16px; padding:24px 28px; background:#fff; font-size:11px; color:#111827; }
+/* 屏幕：一页一张分页 + 收据框样式（和 admin 一样） */
+.single-receipt-block {
+  page-break-after: always;
+  break-after: page;
+  margin: 0!important;
+}
+.single-receipt-block:last-child {
+  page-break-after: auto;
+  break-after: auto;
+}
+
+.receipt-shell {
+  border:1px solid #e5e7eb;
+  border-radius:16px;
+  padding:18px 22px;
+  background:#fff;
+  font-size:13px;
+  color:#111827;
+  page-break-inside: avoid!important;
+  width: 100%!important;
+  margin: 0 auto!important;
+}
 .receipt-header { width:100%; margin-bottom:10px; }
 .receipt-header td { vertical-align:top; }
 .receipt-logo img { max-height:55px; }
@@ -409,7 +504,7 @@ include __DIR__ . '/../include/header.php';
 .receipt-nb-title { font-weight:bold; }
 .receipt-sign-row { width:100%; margin-top:22px; }
 .receipt-sign-cell { width:50%; font-size:9px; vertical-align:top; }
-.receipt-sign-block { width:90%; }
+.receipt-sign-block { width:260px; max-width:100%; }
 .receipt-sig-box { position:relative; border:1px solid #9ca3af; border-radius:6px; padding:6px; height:80px; text-align:center; margin-bottom:4px; overflow:hidden; }
 .receipt-sig-main { max-width:100%; max-height:70px; }
 .receipt-chop { position:absolute; right:4px; bottom:3px; max-height:55px; opacity:0.95; }
@@ -429,11 +524,7 @@ include __DIR__ . '/../include/header.php';
           <div class="form-page-subtitle">
             Txn #<?= (int)$txn['id'] ?>
             <?php if ($invoiceNo !== ''): ?> · Invoice No: <?= h($invoiceNo) ?><?php endif; ?>
-            <?php if ($showAll): ?>
-              · <span style="color:#6b7280;">All receipts</span>
-            <?php else: ?>
-              · <span style="color:#2563eb;">Receipt: <?= h((string)($payment['or_no'] ?? ('R'.$paymentId))) ?></span>
-            <?php endif; ?>
+            · <span style="color:#2563eb;">Receipt: <?= h((string)($payment['or_no'] ?? ('R'.$paymentId))) ?></span>
           </div>
         </div>
 
@@ -457,154 +548,30 @@ include __DIR__ . '/../include/header.php';
         <div class="alert-error no-print" style="margin-bottom:10px;"><?= h($errors['signature']) ?></div>
       <?php endif; ?>
 
+      <?php if ($receiptCount > 1): ?>
+        <div class="no-print" style="margin-top:8px;font-size:12px;">
+          <strong>All receipts:</strong>
+          <ul style="margin:6px 0 0 18px; padding:0; list-style:disc;">
+            <?php foreach ($allPays as $p): ?>
+              <?php
+                $rid   = (int)($p['id'] ?? 0);
+                $orNo  = (string)($p['or_no'] ?? ('R'.$rid));
+                $rdate = (string)($p['pay_date'] ?? '');
+                $link  = url('user/txn/txn_invoice_in.php?id='.$id.'&payment_id='.$rid.'&back='.rawurlencode($backUrl));
+              ?>
+              <li>
+                <a href="<?= h($link) ?>" style="text-decoration:none;">
+                  <?= h($orNo) ?><?php if ($rdate !== ''): ?> — <?= h($rdate) ?><?php endif; ?>
+                </a>
+              </li>
+            <?php endforeach; ?>
+          </ul>
+        </div>
+      <?php endif; ?>
+
       <div id="receipt-print-area" style="margin-top:10px;">
 
-        <?php if ($showAll): ?>
-
-          <?php if (!$allPays): ?>
-            <div class="receipt-shell">No payment receipts yet.</div>
-          <?php else: ?>
-
-            <?php
-              $paidToDate = 0.0;
-              foreach ($allPays as $idx => $p):
-
-                $thisBase = pay_to_base($p, $baseCurrency);
-                $paidToDate += $thisBase;
-                $balance = max(0, $origAmount - $paidToDate);
-
-                $cusSig = $canPaySig ? (string)($p['payer_signature_image'] ?? '') : '';
-                $ourSig = $canPaySig ? (string)($p['receiver_signature_image'] ?? '') : '';
-
-                $b = null;
-                $bid = (int)($p['bank_account_id'] ?? 0);
-                if ($bid > 0) {
-                  $stB = $pdo->prepare("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE id=:id LIMIT 1");
-                  $stB->execute([':id'=>$bid]);
-                  $b = $stB->fetch(PDO::FETCH_ASSOC) ?: null;
-                }
-
-                $meta = receipt_meta($pdo, $txn, $p, $b, $payCols, $baseCurrency);
-                $amountWords = amount_to_words_rm($thisBase);
-
-                // ✅ Sign url（保留 back）
-                $signUrl = url('user/txn/txn_invoice_in.php?id='.$id.'&payment_id='.(int)$p['id'].'&back='.rawurlencode($rawBack));
-            ?>
-
-            <div class="single-receipt-block" style="margin-bottom:14px;">
-              <div class="receipt-shell">
-
-                <table class="receipt-header">
-                  <tr>
-                    <td class="receipt-logo" width="25%"><img src="<?= h($logoUrl) ?>" alt="Logo"></td>
-                    <td class="receipt-company-block" width="45%">
-                      <div class="receipt-company-name">VISION MIX SDN BHD (1622729-U)</div>
-                      <div>LOT 3A-02A, 4TH FLOOR ENDAH PARADE,</div>
-                      <div>NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,</div>
-                      <div>57000 KUALA LUMPUR</div>
-                    </td>
-                    <td class="receipt-meta-block" width="30%">
-                      <div><span class="label">Official Receipt No :</span> <?= h($meta['receiptNo']) ?></div>
-                      <div><span class="label">Date :</span> <?= h($meta['receiptDate']) ?></div>
-                      <div><span class="label">Cheque No :</span> <?= h($meta['chequeNo']) ?></div>
-                      <div><span class="label">Received in :</span> <?= h($meta['receivedInText']) ?></div>
-                    </td>
-                  </tr>
-                </table>
-
-                <div class="receipt-line"></div>
-
-                <div class="receipt-label-row"><span class="label">Received From :</span><span><?= h($customerName) ?></span></div>
-                <div class="receipt-label-row"><span class="label">Invoice No :</span><span><?= h($meta['docNo'] ?: '-') ?></span></div>
-
-                <table class="receipt-table">
-                  <thead>
-                    <tr>
-                      <th style="width:50px;">A/C</th>
-                      <th>Description</th>
-                      <th style="width:130px;">Payment For Account</th>
-                      <th style="width:80px;">Doc No</th>
-                      <th style="width:70px;">Doc Date</th>
-                      <th style="width:85px;" class="text-right">Org. Amt (<?= h($meta['currencyCode']) ?>)</th>
-                      <th style="width:85px;" class="text-right">Paid (<?= h($meta['currencyCode']) ?>)</th>
-                      <th style="width:85px;" class="text-right">Balance (<?= h($meta['currencyCode']) ?>)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>1</td>
-                      <td><?= h($customerName) ?></td>
-                      <td>Payment For Account</td>
-                      <td><?= h($meta['docNo'] ?: '-') ?></td>
-                      <td><?= h($meta['docDate'] ?: '-') ?></td>
-                      <td class="text-right"><?= fmt_money($origAmount) ?></td>
-                      <td class="text-right"><?= fmt_money($thisBase) ?></td>
-                      <td class="text-right"><?= fmt_money($balance) ?></td>
-                    </tr>
-                  </tbody>
-                </table>
-
-                <div class="receipt-amount-words"><?= h($amountWords) ?></div>
-
-                <div class="receipt-nb">
-                  <div class="receipt-nb-title">N.B.</div>
-                  <div>Validity of this receipt is subject to clearing of cheque / transfer.</div>
-                </div>
-
-                <?php if ($signReceive || $signPayer): ?>
-                <table class="receipt-sign-row">
-                  <tr>
-                    <td class="receipt-sign-cell">
-                      <?php if ($signPayer): ?>
-                        <div class="receipt-sign-block">
-                          <div style="font-weight:bold;margin-bottom:4px;">Received by (Customer)</div>
-                          <div class="receipt-sig-box">
-                            <?php if ($cusSig !== ''): ?>
-                              <img src="<?= h($cusSig) ?>" class="receipt-sig-main" alt="Customer Signature">
-                            <?php endif; ?>
-                          </div>
-                          <div class="receipt-sign-line">Signature / Name / Date</div>
-                        </div>
-                      <?php endif; ?>
-                    </td>
-                    <td class="receipt-sign-cell" style="text-align:right;">
-                      <?php if ($signReceive): ?>
-                        <div class="receipt-sign-block" style="margin-left:auto;">
-                          <div style="font-weight:bold;margin-bottom:4px;">For VISION MIX SDN BHD</div>
-                          <div class="receipt-sig-box">
-                            <?php if ($ourSig !== ''): ?>
-                              <img src="<?= h($ourSig) ?>" class="receipt-sig-main" alt="Our Signature">
-                            <?php endif; ?>
-                            <img src="<?= h($chopUrl) ?>" class="receipt-chop" alt="Company Chop">
-                          </div>
-                          <div class="receipt-sign-line">Authorized Signatory / Company Chop</div>
-                        </div>
-                      <?php endif; ?>
-                    </td>
-                  </tr>
-                </table>
-                <?php endif; ?>
-
-                <?php if ($signPayer && $canPaySig): ?>
-                  <div class="no-print" style="margin-top:10px; text-align:right;">
-                    <a class="btn btn-light btn-sm" href="<?= h($signUrl) ?>">Open / Sign this receipt</a>
-                  </div>
-                <?php endif; ?>
-
-              </div>
-            </div>
-
-            <?php endforeach; ?>
-
-          <?php endif; ?>
-
-          <div class="no-print" style="margin-top:12px;display:flex;justify-content:space-between;">
-            <a href="<?= h($backUrl) ?>" class="btn btn-light"><?= h(t('admin.common.back', [], 'Back')) ?></a>
-          </div>
-
-        <?php else: ?>
-
-          <?php
+        <?php
             // 单张：算到该 payment 为止的 balance
             $paidToDate = 0.0;
             $thisBase = 0.0;
@@ -632,6 +599,8 @@ include __DIR__ . '/../include/header.php';
 
             $hasCustomerSig = ($cusSig !== '');
             $canCustomerSign = ($signPayer && $canPaySig && !$hasCustomerSig);
+            // 只要任一侧需要签，或者 sign_mode=CHOP_ONLY（只盖章），就显示签名/盖章区域
+            $needAnySign = ($signPayer || $signReceive || $signMode === 'CHOP_ONLY');
           ?>
 
           <div class="single-receipt-block">
@@ -641,10 +610,16 @@ include __DIR__ . '/../include/header.php';
                 <tr>
                   <td class="receipt-logo" width="25%"><img src="<?= h($logoUrl) ?>" alt="Logo"></td>
                   <td class="receipt-company-block" width="45%">
-                    <div class="receipt-company-name">VISION MIX SDN BHD (1622729-U)</div>
-                    <div>LOT 3A-02A, 4TH FLOOR ENDAH PARADE,</div>
-                    <div>NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,</div>
-                    <div>57000 KUALA LUMPUR</div>
+                    <div class="receipt-company-name"><?= h($companyName) ?><?= $companyRegNo !== '' ? ' (' . h($companyRegNo) . ')' : '' ?></div>
+                    <?php foreach ($companyAddress as $line): if (trim($line) === '') continue; ?>
+                    <div><?= h($line) ?></div>
+                    <?php endforeach; ?>
+                    <?php if ($companyPhone !== ''): ?>
+                    <div style="margin-top:4px;"><span class="label">Tel:</span> <?= h($companyPhone) ?></div>
+                    <?php endif; ?>
+                    <?php if ($companyEmail !== ''): ?>
+                    <div><span class="label">Email:</span> <?= h($companyEmail) ?></div>
+                    <?php endif; ?>
                   </td>
                   <td class="receipt-meta-block" width="30%">
                     <div><span class="label">Official Receipt No :</span> <?= h($meta['receiptNo']) ?></div>
@@ -694,38 +669,41 @@ include __DIR__ . '/../include/header.php';
                 <div>Validity of this receipt is subject to clearing of cheque / transfer.</div>
               </div>
 
-              <?php if ($signReceive || $signPayer): ?>
-              <table class="receipt-sign-row">
-                <tr>
-                  <td class="receipt-sign-cell">
+              <?php if ($needAnySign): ?>
+                <table class="receipt-sign-row">
+                  <tr>
                     <?php if ($signPayer): ?>
+                    <td class="receipt-sign-cell">
                       <div class="receipt-sign-block">
-                        <div style="font-weight:bold;margin-bottom:4px;">Received by (Customer)</div>
+                        <div style="margin-bottom:4px;">DATE:</div>
+                        <div style="border-bottom:1px solid #000;min-height:20px;margin-bottom:12px;"></div>
+                        <div style="font-weight:bold;margin-bottom:4px;">RECEIVED BY AND COMPANY STAMP:</div>
                         <div class="receipt-sig-box">
                           <?php if ($cusSig !== ''): ?>
                             <img src="<?= h($cusSig) ?>" class="receipt-sig-main" alt="Customer Signature">
                           <?php endif; ?>
                         </div>
-                        <div class="receipt-sign-line">Signature / Name / Date</div>
                       </div>
+                    </td>
                     <?php endif; ?>
-                  </td>
-                  <td class="receipt-sign-cell" style="text-align:right;">
-                    <?php if ($signReceive): ?>
+                    <td class="receipt-sign-cell" style="text-align:right;">
                       <div class="receipt-sign-block" style="margin-left:auto;">
-                        <div style="font-weight:bold;margin-bottom:4px;">For VISION MIX SDN BHD</div>
-                        <div class="receipt-sig-box">
-                          <?php if ($ourSig !== ''): ?>
+                        <div style="font-weight:bold;margin-bottom:4px;"><?= h($companyName) ?></div>
+                        <div class="receipt-sig-box" style="height:80px;">
+                          <?php if ($signReceive && $ourSig !== ''): ?>
                             <img src="<?= h($ourSig) ?>" class="receipt-sig-main" alt="Our Signature">
                           <?php endif; ?>
-                          <img src="<?= h($chopUrl) ?>" class="receipt-chop" alt="Company Chop">
+                          <?php if ($chopUrl): ?>
+                            <img src="<?= h($chopUrl) ?>" class="receipt-chop" alt="Company Chop">
+                          <?php endif; ?>
                         </div>
-                        <div class="receipt-sign-line">Authorized Signatory / Company Chop</div>
+                        <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
+                          <?= $signReceive ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
+                        </div>
                       </div>
-                    <?php endif; ?>
-                  </td>
-                </tr>
-              </table>
+                    </td>
+                  </tr>
+                </table>
               <?php endif; ?>
 
             </div>
@@ -754,25 +732,14 @@ include __DIR__ . '/../include/header.php';
                   </button>
                 </div>
 
-                <div class="no-print" style="margin-top:12px;display:flex;justify-content:space-between;">
-                  <!-- ✅ Back to all receipts（保留 back，修复版） -->
-                  <a href="<?= h(url('user/txn/txn_invoice_in.php?id='.$id.'&back='.rawurlencode($rawBack))) ?>" class="btn btn-light">
-                    Back to all receipts
-                  </a>
-                  <button type="submit" class="btn btn-primary"><?= h(t('cust.txn.sign.btn_save', [], 'Save signature')) ?></button>
-                </div>
+            <div class="no-print" style="margin-top:12px;display:flex;justify-content:flex-end;">
+              <button type="submit" class="btn btn-primary"><?= h(t('cust.txn.sign.btn_save', [], 'Save signature')) ?></button>
+            </div>
               </form>
             </div>
           <?php else: ?>
-            <div class="no-print" style="margin-top:12px;display:flex;justify-content:space-between;">
-              <!-- ✅ Back to all receipts（保留 back，修复版） -->
-              <a href="<?= h(url('user/txn/txn_invoice_in.php?id='.$id.'&back='.rawurlencode($rawBack))) ?>" class="btn btn-light">
-                Back to all receipts
-              </a>
-            </div>
+        <!-- no extra actions when signature not required -->
           <?php endif; ?>
-
-        <?php endif; ?>
 
       </div><!-- /print-area -->
 
@@ -780,7 +747,7 @@ include __DIR__ . '/../include/header.php';
   </div>
 </div>
 
-<?php if (!$showAll && isset($canCustomerSign) && $canCustomerSign): ?>
+<?php if (isset($canCustomerSign) && $canCustomerSign): ?>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   const form = document.getElementById('sign-form');

@@ -154,6 +154,49 @@ function require_login(): void
 }
 
 /**
+ * 当前登录用户绑定的 customer row（仅 CUSTOMER 角色有意义）
+ */
+function current_customer(): ?array
+{
+    static $cached = null;
+    if ($cached !== null) return $cached;
+
+    $u = current_user();
+    if (!$u) return $cached = null;
+    $cid = (int)($u['customer_id'] ?? 0);
+    if ($cid <= 0) return $cached = null;
+
+    try {
+        $pdo = get_pdo();
+        $st = $pdo->prepare("SELECT * FROM customers WHERE id = :id LIMIT 1");
+        $st->execute([':id' => $cid]);
+        $row = $st->fetch(\PDO::FETCH_ASSOC);
+        return $cached = ($row ?: null);
+    } catch (\Throwable $e) {
+        return $cached = null;
+    }
+}
+
+/**
+ * CUSTOMER portal: require current user's customer category.
+ */
+function require_customer_category(int $categoryId): void
+{
+    require_login();
+    $u = current_user();
+    if (!$u || ($u['role'] ?? '') !== 'CUSTOMER') {
+        http_response_code(403);
+        exit('Forbidden');
+    }
+    $c = current_customer();
+    $cat = (int)($c['category_id'] ?? 0);
+    if ($cat !== $categoryId) {
+        http_response_code(403);
+        exit('Forbidden');
+    }
+}
+
+/**
  * 只允许 internal ADMIN 进入 admin 区
  * （users.role = 'ADMIN'）
  */

@@ -264,8 +264,9 @@ function bank_txn_sync_for_in_payment(
 // ✅ 统一重算 status（跟 receipt 同规则）
 function recompute_in_txn_status(PDO $pdo, int $txnId): void
 {
+    $colsTxn = table_columns($pdo, 'customer_txn');
     $st = $pdo->prepare("
-        SELECT id, in_kind, currency, order_total, sign_receive, sign_payer
+        SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, doc_flow_type, doc_flow_status
         FROM customer_txn
         WHERE id=:id LIMIT 1
     ");
@@ -346,32 +347,58 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
     }
 
     $newStatus = ($isPaidEnough && $signOk) ? 'CONFIRMED' : 'PENDING';
+    $flowType = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
+    if (!in_array($flowType, ['NORMAL', 'QUOTATION'], true)) $flowType = 'NORMAL';
+    $hasFlowStat = isset($colsTxn['doc_flow_status']);
 
     if ($newStatus === 'CONFIRMED') {
-        $pdo->prepare("
-            UPDATE customer_txn
-            SET status='CONFIRMED',
-                confirmed_at=IFNULL(confirmed_at,NOW()),
-                updated_at=NOW()
-            WHERE id=:id
-        ")->execute([':id' => $txnId]);
+        $set = [
+            "status='CONFIRMED'",
+            "confirmed_at=IFNULL(confirmed_at,NOW())",
+            "updated_at=NOW()",
+        ];
+        // paid 完成后：自动把 invoice 的 flow status 设为 COMPLETED
+        if ($hasFlowStat && $flowType === 'NORMAL') {
+            $set[] = "doc_flow_status='COMPLETED'";
+        }
+        $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id=:id")
+            ->execute([':id' => $txnId]);
     } else {
-        $pdo->prepare("
-            UPDATE customer_txn
-            SET status='PENDING',
-                updated_at=NOW()
-            WHERE id=:id
-        ")->execute([':id' => $txnId]);
+        $set = [
+            "status='PENDING'",
+            "updated_at=NOW()",
+        ];
+        // 未完成付款时：invoice 保持 PROCESSING（不要自动变 COMPLETED）
+        if ($hasFlowStat && $flowType === 'NORMAL') {
+            $set[] = "doc_flow_status='PROCESSING'";
+        }
+        $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id=:id")
+            ->execute([':id' => $txnId]);
     }
 }
 
 // IN kinds
 $validInKinds = ['INVOICE', 'RETURN', 'BONUS'];
 
+// extra columns (schema-safe flags)
+$txnCols           = table_columns($pdo, 'customer_txn');
+$hasColDoDate      = isset($txnCols['do_date']);
+$hasColDoNumber    = isset($txnCols['do_number']);
+$hasColSignMode    = isset($txnCols['sign_mode']);
+$hasColDocFlowType = isset($txnCols['doc_flow_type']);
+$hasColDocFlowStat = isset($txnCols['doc_flow_status']);
+$hasColRequireSignQuotation = isset($txnCols['require_sign_quotation']);
+$hasColRequireSignInvoice   = isset($txnCols['require_sign_invoice']);
+$hasColRequireSignDo        = isset($txnCols['require_sign_do']);
+
 // ---------- params ----------
 $customer_id = (int)($_GET['customer_id'] ?? $_POST['customer_id'] ?? 0);
 $id          = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
 $ok          = (string)($_GET['ok'] ?? '');
+$requestedFlowType = strtoupper(trim((string)($_GET['doc_flow_type'] ?? $_POST['doc_flow_type'] ?? '')));
+if (!in_array($requestedFlowType, ['NORMAL', 'QUOTATION'], true)) {
+    $requestedFlowType = 'NORMAL';
+}
 
 // load txn if id exists
 $txn = null;
@@ -403,6 +430,14 @@ if ($id > 0) {
     } elseif ($customer_id !== $txnCustomerId) {
         http_response_code(400);
         exit(tt('admin.txn_in.err.customer_mismatch', 'Customer mismatch'));
+    }
+
+    // 还在 Quotation（未生成 invoice_no）时，不允许进入 txn_edit_in，直接回到 quotation_edit
+    $invNoNow = trim((string)($txn['invoice_no'] ?? ''));
+    $flowNow = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
+    if ($invNoNow === '' && $flowNow === 'QUOTATION') {
+        header('Location: ' . url('admin/customers/quotation_edit.php?id=' . (int)$id . '&customer_id=' . (int)$customer_id));
+        exit;
     }
 }
 
@@ -515,15 +550,38 @@ if ($txn === null) {
         'order_total'       => 0,
         'invoice_no'        => '',
         'status'            => 'PENDING',
+        'doc_flow_type'     => $requestedFlowType,
+        'doc_flow_status'   => 'DRAFT',
         'notes'             => '',
         'sign_receive'      => 1,
         'sign_payer'        => 0,
         'require_signature' => 0,
+        'do_date'           => null,
+        'do_number'         => '',
+        'sign_mode'         => 'SIGN_AND_CHOP',
         'recipient_name'    => '',
         'recipient_nric'    => '',
         'payer_company_id'  => null,
         'payer_staff_id'    => null,
     ];
+}
+
+// ---------- Auto-fill suggested invoice_no for display (user can change; save uses submitted or auto-generate if blank) ----------
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $isInvoiceKindDisplay = (strtoupper((string)($txn['in_kind'] ?? 'INVOICE')) === 'INVOICE');
+    if ($isInvoiceKindDisplay && trim((string)($txn['invoice_no'] ?? '')) === '') {
+        $txnDate = $txn['txn_date'] ?? date('Y-m-d');
+        $ym = date('ym', strtotime($txnDate));
+        $prefix = "VM{$ym}-";
+        $stInv = $pdo->prepare("SELECT invoice_no FROM customer_txn WHERE invoice_no LIKE :pfx ORDER BY id DESC LIMIT 1");
+        $stInv->execute([':pfx' => $prefix . '%']);
+        $seqNo = 1;
+        if ($rInv = $stInv->fetch()) {
+            $last3 = (int)substr((string)$rInv['invoice_no'], -3);
+            $seqNo = $last3 + 1;
+        }
+        $txn['invoice_no'] = $prefix . str_pad((string)$seqNo, 3, '0', STR_PAD_LEFT);
+    }
 }
 
 // ---------- load payment lines ----------
@@ -561,6 +619,8 @@ $errors = [];
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $txn_date       = (string)($_POST['txn_date'] ?? ($txn['txn_date'] ?? ''));
+    $do_date        = (string)($_POST['do_date'] ?? ($txn['do_date'] ?? ''));
+    $do_number      = $hasColDoNumber ? trim((string)($_POST['do_number'] ?? ($txn['do_number'] ?? ''))) : '';
     $invoice_no     = trim((string)($_POST['invoice_no'] ?? ($txn['invoice_no'] ?? '')));
     $order_total    = (float)($_POST['order_total'] ?? ($txn['order_total'] ?? 0));
     $title          = trim((string)($_POST['title'] ?? ($txn['title'] ?? '')));
@@ -569,6 +629,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $sign_payer     = isset($_POST['sign_payer'])   ? 1 : 0;
     $recipient_name = trim((string)($_POST['recipient_name'] ?? ($txn['recipient_name'] ?? '')));
     $recipient_nric = trim((string)($_POST['recipient_nric'] ?? ($txn['recipient_nric'] ?? '')));
+
+    // sign mode (our side: signature + chop / chop only)
+    $sign_mode = (string)($_POST['sign_mode'] ?? ($txn['sign_mode'] ?? 'SIGN_AND_CHOP'));
+    $sign_mode = strtoupper(trim($sign_mode));
+    if (!in_array($sign_mode, ['CHOP_ONLY', 'SIGN_AND_CHOP', 'SIGN_ONLY'], true)) {
+        $sign_mode = 'SIGN_AND_CHOP';
+    }
+
+    // when CHOP_ONLY, we don't require our signature (only company chop)
+    if ($sign_mode === 'CHOP_ONLY') {
+        $sign_receive = 0;
+    }
 
     $postInKind = strtoupper(trim((string)($_POST['in_kind'] ?? ($txn['in_kind'] ?? 'INVOICE'))));
     if (!in_array($postInKind, $validInKinds, true)) $postInKind = 'INVOICE';
@@ -585,6 +657,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $payer_staff_id = (isset($_POST['payer_staff_id']) && $_POST['payer_staff_id'] !== '')
         ? (int)$_POST['payer_staff_id'] : null;
 
+    // document flow type (NORMAL / QUOTATION) if column exists
+    $doc_flow_type = (string)($txn['doc_flow_type'] ?? 'NORMAL');
+    if ($hasColDocFlowType) {
+        $doc_flow_type = strtoupper(trim((string)($_POST['doc_flow_type'] ?? $doc_flow_type)));
+        if (!in_array($doc_flow_type, ['NORMAL', 'QUOTATION'], true)) {
+            $doc_flow_type = 'NORMAL';
+        }
+    }
+
     // signature requirement: if any side signature checked
     $need_signature = ($sign_receive || $sign_payer) ? 1 : 0;
 
@@ -593,6 +674,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($txn_date === '') $errors['txn_date'] = tt('admin.txn_in.err.date_required', 'Date is required');
     if ($order_total <= 0) $errors['order_total'] = tt('admin.txn_in.err.amount_gt_zero', 'Amount must be greater than 0');
+
+    // DO Number: format VMDOyyMM-00X; auto-generate when do_date set and do_number empty
+    if ($hasColDoNumber && $do_number === '' && $do_date !== '') {
+        $ym = date('ym', strtotime($do_date));
+        $prefix = 'VMDO' . $ym . '-';
+        $stDo = $pdo->prepare("SELECT do_number FROM customer_txn WHERE do_number LIKE :pfx ORDER BY do_number DESC LIMIT 1");
+        $stDo->execute([':pfx' => $prefix . '%']);
+        $seqNo = 1;
+        if ($rDo = $stDo->fetch()) {
+            $last3 = (int)substr((string)$rDo['do_number'], -3);
+            $seqNo = $last3 + 1;
+        }
+        $do_number = $prefix . str_pad((string)$seqNo, 3, '0', STR_PAD_LEFT);
+    }
 
     $payPosts = $_POST['pay'] ?? [];
 
@@ -725,6 +820,45 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ];
                 if ($hasTitle) $bind[':title'] = $title;
 
+                // optional columns
+                if ($hasColDoDate) {
+                    $sqlIns = str_replace(
+                        "txn_date, currency",
+                        "txn_date, do_date, currency",
+                        $sqlIns
+                    );
+                }
+                if ($hasColDoNumber) {
+                    if ($hasColDoDate) {
+                        $sqlIns = str_replace("do_date, currency", "do_date, do_number, currency", $sqlIns);
+                        $sqlIns = str_replace(":do_date, :currency", ":do_date, :do_number, :currency", $sqlIns);
+                    } else {
+                        $sqlIns = str_replace("txn_date, currency", "txn_date, do_number, currency", $sqlIns);
+                        $sqlIns = str_replace(":txn_date, :currency", ":txn_date, :do_number, :currency", $sqlIns);
+                    }
+                }
+                if ($hasColSignMode) {
+                    $sqlIns = str_replace(
+                        "require_signature,",
+                        "require_signature, sign_mode,",
+                        $sqlIns
+                    );
+                }
+
+                // re-prepare if we modified SQL for optional columns
+                if ($hasColDoDate || $hasColSignMode || $hasColDoNumber) {
+                    $st = $pdo->prepare($sqlIns);
+                    if ($hasColDoDate) {
+                        $bind[':do_date'] = ($do_date !== '') ? $do_date : null;
+                    }
+                    if ($hasColDoNumber) {
+                        $bind[':do_number'] = $do_number;
+                    }
+                    if ($hasColSignMode) {
+                        $bind[':sign_mode'] = $sign_mode;
+                    }
+                }
+
                 $st->execute($bind);
                 $txnId = (int)$pdo->lastInsertId();
             } else {
@@ -792,6 +926,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ':cid'               => $customer_id,
                 ];
                 if ($hasTitle) $bind[':title'] = $title;
+
+                // optional columns
+                if ($hasColDoDate) {
+                    $sqlUpd = str_replace(
+                        "txn_date          = :txn_date,",
+                        "txn_date          = :txn_date,\n                          do_date           = :do_date,",
+                        $sqlUpd
+                    );
+                }
+                if ($hasColDoNumber) {
+                    if ($hasColDoDate) {
+                        $sqlUpd = str_replace("do_date           = :do_date,", "do_date           = :do_date,\n                          do_number         = :do_number,", $sqlUpd);
+                    } else {
+                        $sqlUpd = str_replace("txn_date          = :txn_date,", "txn_date          = :txn_date,\n                          do_number         = :do_number,", $sqlUpd);
+                    }
+                }
+                if ($hasColSignMode) {
+                    $sqlUpd = str_replace(
+                        "require_signature = :require_signature,",
+                        "require_signature = :require_signature,\n                          sign_mode        = :sign_mode,",
+                        $sqlUpd
+                    );
+                }
+
+                if ($hasColDoDate || $hasColSignMode || $hasColDoNumber) {
+                    $st = $pdo->prepare($sqlUpd);
+                    if ($hasColDoDate) {
+                        $bind[':do_date'] = ($do_date !== '') ? $do_date : null;
+                    }
+                    if ($hasColDoNumber) {
+                        $bind[':do_number'] = $do_number;
+                    }
+                    if ($hasColSignMode) {
+                        $bind[':sign_mode'] = $sign_mode;
+                    }
+                }
 
                 $st->execute($bind);
             }
@@ -1101,6 +1271,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             // ✅ 最关键：统一重算 status（勾签名才锁confirm）
             recompute_in_txn_status($pdo, (int)$txnId);
 
+            // ✅ 文档流转状态（INVOICE / QUOTATION）
+            if ($hasColDocFlowType || $hasColDocFlowStat) {
+                $flowType   = $doc_flow_type;                           // NORMAL / QUOTATION
+                $flowStatus = (string)($txn['doc_flow_status'] ?? '');  // keep existing if any
+                if ((int)($txn['id'] ?? 0) <= 0 || $flowStatus === '') {
+                    // new record or previously empty -> start as DRAFT
+                    $flowStatus = 'DRAFT';
+                }
+
+                $sqlFlow = "UPDATE customer_txn SET ";
+                $sets    = [];
+                $paramsF = [':id' => $txnId];
+                if ($hasColDocFlowType) {
+                    $sets[]              = "doc_flow_type = :dft";
+                    $paramsF[':dft']     = $flowType;
+                }
+                if ($hasColDocFlowStat) {
+                    $sets[]              = "doc_flow_status = :dfs";
+                    $paramsF[':dfs']     = $flowStatus;
+                }
+                if ($sets) {
+                    $sqlFlow .= implode(', ', $sets) . " WHERE id = :id";
+                    $pdo->prepare($sqlFlow)->execute($paramsF);
+                }
+            }
+
+            // Require customer signature per document (Quotation / Invoice / DO)
+            if ($hasColRequireSignQuotation || $hasColRequireSignInvoice || $hasColRequireSignDo) {
+                $signQuotation = isset($_POST['require_sign_quotation']) ? 1 : 0;
+                $signInvoice   = isset($_POST['require_sign_invoice']) ? 1 : 0;
+                $signDo        = isset($_POST['require_sign_do']) ? 1 : 0;
+                $setsDoc = [];
+                $paramsDoc = [':id' => $txnId];
+                if ($hasColRequireSignQuotation) { $setsDoc[] = "require_sign_quotation = :rq"; $paramsDoc[':rq'] = $signQuotation; }
+                if ($hasColRequireSignInvoice)   { $setsDoc[] = "require_sign_invoice = :ri";   $paramsDoc[':ri'] = $signInvoice; }
+                if ($hasColRequireSignDo)        { $setsDoc[] = "require_sign_do = :rd";        $paramsDoc[':rd'] = $signDo; }
+                if ($setsDoc) {
+                    $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $setsDoc) . " WHERE id = :id")->execute($paramsDoc);
+                }
+            }
+
             if (function_exists('audit_log')) {
                 audit_log(
                     $pdo,
@@ -1136,6 +1347,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // rewrite txn for re-render
     $txn['txn_date']          = $txn_date;
+    $txn['do_date']           = $do_date;
+    $txn['do_number']         = $do_number;
     $txn['invoice_no']        = $invoice_no;
     $txn['order_total']       = $order_total;
     $txn['title']             = $title;
@@ -1145,6 +1358,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $txn['require_signature'] = $need_signature;
     $txn['currency']          = $txn_currency_in;
     $txn['in_kind']           = $postInKind;
+    $txn['doc_flow_type']     = $doc_flow_type;
+    $txn['sign_mode']         = $sign_mode;
     $txn['recipient_name']    = $recipient_name;
     $txn['recipient_nric']    = $recipient_nric;
     $txn['payer_company_id']  = $payer_company_id;
@@ -1362,9 +1577,26 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                     <div class="form-page-subtitle"><?= h(tt('admin.txn_in.subtitle', 'Create / edit one IN order with multiple payments.')) ?></div>
                 </div>
                 <div class="form-page-meta">
+                    <?php
+                    $flowTypeNow = strtoupper((string)($txn['doc_flow_type'] ?? 'NORMAL'));
+                    if (!in_array($flowTypeNow, ['NORMAL', 'QUOTATION'], true)) $flowTypeNow = 'NORMAL';
+                    $flowLabelNow = ($flowTypeNow === 'QUOTATION') ? 'Quotation' : 'Invoice';
+                    ?>
+                    <div style="margin-bottom:8px;font-size:12px;color:#6b7280;">
+                        Flow: <strong><?= h($flowLabelNow) ?></strong>
+                    </div>
                     <a href="<?= h(url('admin/customers/txn_list.php?customer_id=' . $customer_id)) ?>" class="btn btn-light">
                         <?= h(tt('admin.txn_in.back', '← Back to transactions')) ?>
                     </a>
+                    <?php if (!empty($txn['id'])): ?>
+                        <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light" style="margin-top:6px;">
+                            View Quotation
+                        </a>
+                        <?php if ($flowTypeNow === 'NORMAL' || trim((string)($txn['invoice_no'] ?? '')) !== ''): ?>
+                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light" style="margin-top:6px;">View Invoice</a>
+                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light" style="margin-top:6px;">View DO</a>
+                        <?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
 
@@ -1377,6 +1609,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
             <form method="post" enctype="multipart/form-data" class="form-layout">
                 <input type="hidden" name="customer_id" value="<?= (int)$customer_id ?>">
                 <input type="hidden" name="id" value="<?= (int)($txn['id'] ?? 0) ?>">
+                <input type="hidden" name="doc_flow_type" value="<?= h((string)($txn['doc_flow_type'] ?? 'NORMAL')) ?>">
 
                 <div class="form-section">
                     <div class="form-section-header">
@@ -1422,7 +1655,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                                 id="invoice_no_input"
                                 class="form-control"
                                 value="<?= h($txn['invoice_no'] ?? '') ?>"
-                                placeholder="<?= h(tt('admin.txn_in.invoice_ph', 'Leave blank for auto VMYYMM-XXX')) ?>"
+                                placeholder="<?= h(tt('admin.txn_in.invoice_ph', 'Auto-filled; change if needed')) ?>"
                                 <?= $isInvoiceKind ? '' : 'readonly style="background:#f9fafb;"' ?>>
                             <?php if (!$isInvoiceKind): ?>
                                 <div style="font-size:11px;color:#6b7280;margin-top:2px;">
@@ -1462,6 +1695,21 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                                 <?= h(tt('admin.txn_in.amount_help', 'Paid / Pending are calculated in the same currency.')) ?>
                             </div>
                         </div>
+
+                        <?php if ($hasColDoDate): ?>
+                        <div class="form-group">
+                            <label class="field-label">DO date</label>
+                            <input type="date" name="do_date" class="form-control" value="<?= h($txn['do_date'] ?? '') ?>">
+                            <div style="font-size:11px;color:#6b7280;margin-top:2px;">Optional. Only used for Invoice / DO documents.</div>
+                        </div>
+                        <?php endif; ?>
+                        <?php if ($hasColDoNumber): ?>
+                        <div class="form-group">
+                            <label class="field-label">DO. Number</label>
+                            <input type="text" name="do_number" class="form-control" value="<?= h($txn['do_number'] ?? '') ?>" placeholder="e.g. VMDO2601-001">
+                            <div style="font-size:11px;color:#6b7280;margin-top:2px;">Format: VMDOyyMM-00X (e.g. VMDO2601-001). Leave blank with DO date set to auto-generate.</div>
+                        </div>
+                        <?php endif; ?>
                     </div>
 
                     <div style="margin-top:8px;font-size:13px;">
@@ -1684,6 +1932,42 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                         </div>
                     </div>
 
+                    <?php if ((int)($txn['id'] ?? 0) > 0): ?>
+                    <div class="form-group" style="margin-top:14px;">
+                        <div style="font-weight:600;margin-bottom:6px;">Quotation / Invoice / DO</div>
+                        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;">
+                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light btn-sm">View Quotation</a>
+                            <?php if ($flowTypeNow === 'NORMAL' || trim((string)($txn['invoice_no'] ?? '')) !== ''): ?>
+                                <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light btn-sm">View Invoice</a>
+                                <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light btn-sm">View DO</a>
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($hasColRequireSignQuotation || $hasColRequireSignInvoice || $hasColRequireSignDo): ?>
+                        <div style="font-size:12px;color:#6b7280;margin-bottom:4px;">Require customer signature for:</div>
+                        <div style="display:flex;flex-wrap:wrap;gap:14px;">
+                            <?php if ($hasColRequireSignQuotation): ?>
+                                <label style="display:flex;align-items:center;gap:6px;">
+                                    <input type="checkbox" name="require_sign_quotation" value="1" <?= !empty($txn['require_sign_quotation']) ? 'checked' : '' ?>>
+                                    <span>Quotation</span>
+                                </label>
+                            <?php endif; ?>
+                            <?php if ($hasColRequireSignInvoice): ?>
+                                <label style="display:flex;align-items:center;gap:6px;">
+                                    <input type="checkbox" name="require_sign_invoice" value="1" <?= !empty($txn['require_sign_invoice']) ? 'checked' : '' ?>>
+                                    <span>Invoice</span>
+                                </label>
+                            <?php endif; ?>
+                            <?php if ($hasColRequireSignDo): ?>
+                                <label style="display:flex;align-items:center;gap:6px;">
+                                    <input type="checkbox" name="require_sign_do" value="1" <?= !empty($txn['require_sign_do']) ? 'checked' : '' ?>>
+                                    <span>DO</span>
+                                </label>
+                            <?php endif; ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    <?php endif; ?>
+
                     <!-- Our side -->
                     <div class="form-group" style="margin-top:12px;">
                         <div style="font-weight:600;margin-bottom:4px;"><?= h(tt('admin.txn_in.our.title', 'Our side (who receive)')) ?></div>
@@ -1774,15 +2058,27 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
 
                     <div class="form-grid form-grid-2" style="margin-top:10px;">
                         <div class="form-group">
-                            <label class="switch-label">
-                                <span class="switch-text"><?= h(tt('admin.txn_in.sign.sign_receive', 'Sign receive (our signature on receipt)')) ?></span>
-                                <label class="switch">
-                                    <input type="checkbox" name="sign_receive" value="1" <?= ($txn['sign_receive'] ?? 1) ? 'checked' : '' ?>>
-                                    <span class="slider"></span>
-                                </label>
+                            <label class="field-label" style="margin-bottom:4px;">
+                                Our side on receipt
                             </label>
+                            <div style="font-size:12px;margin-bottom:4px;">
+                                <?php
+                                $curMode = strtoupper((string)($txn['sign_mode'] ?? 'SIGN_AND_CHOP'));
+                                if (!in_array($curMode, ['CHOP_ONLY', 'SIGN_ONLY', 'SIGN_AND_CHOP'], true)) {
+                                    $curMode = 'SIGN_AND_CHOP';
+                                }
+                                ?>
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+                                    <input type="radio" name="sign_mode" value="CHOP_ONLY" <?= $curMode === 'CHOP_ONLY' ? 'checked' : '' ?>>
+                                    <span>Company chop only (no signature)</span>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+                                    <input type="radio" name="sign_mode" value="SIGN_AND_CHOP" <?= $curMode === 'SIGN_AND_CHOP' ? 'checked' : '' ?>>
+                                    <span>Signature + company chop (default)</span>
+                                </label>
+                            </div>
                             <div style="font-size:11px;color:#6b7280;margin-top:2px;">
-                                <?= h(tt('admin.txn_in.sign.sign_receive_help', 'Checked = show “Received by” + company chop. Unchecked = only company chop.')) ?>
+                                If you choose “chop only”, our signature is not required, but the company stamp will still show on the receipt.
                             </div>
                         </div>
 

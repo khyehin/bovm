@@ -130,6 +130,7 @@ $sql = "
         WHEN t.txn_type='IN'
           AND (COALESCE(t.is_contra,0)=0)
           AND UPPER(TRIM(COALESCE(t.status,''))) <> 'CONFIRMED'
+          AND UPPER(TRIM(COALESCE(t.doc_flow_status,''))) <> 'REJECTED'
         THEN
           GREATEST(
             0,
