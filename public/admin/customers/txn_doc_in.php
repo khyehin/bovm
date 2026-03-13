@@ -255,6 +255,7 @@ if (!$allowFromPortal) {
 </style>
 
 <?php if (!$allowFromPortal): ?>
+  <!-- Admin 后台：完整控制条（Back + Print + 签名控制），顾客看不到 -->
   <div class="no-print">
     <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . $id . '&customer_id=' . $cid)) ?>" class="btn btn-light">← Back</a>
     <button type="button" class="btn btn-primary" onclick="window.print();">Print / PDF</button>
@@ -271,9 +272,39 @@ if (!$allowFromPortal) {
     </div>
   </div>
 <?php else: ?>
-  <div class="no-print">
-    <button type="button" class="btn btn-primary" onclick="window.print();">Print / PDF</button>
-  </div>
+  <?php if (!empty($GLOBALS['ALLOW_TXN_DOC_FROM_COMPANY1'] ?? false)): ?>
+    <!-- Company1 入口：有 Back / Print / 签名控制 + Quotation·Invoice·DO -->
+    <div class="no-print" style="margin-bottom:10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+      <?php
+      $backUrlDoc = (string)($GLOBALS['_TXN_DOC_BACK_URL_FROM_PORTAL'] ?? url('user/company1/invoices.php?customer_id=' . $cid));
+      ?>
+      <a href="<?= h($backUrlDoc) ?>" class="btn btn-light btn-sm">← Back</a>
+      <button type="button" class="btn btn-light btn-sm" onclick="window.print();">Print / PDF</button>
+      <div class="sig-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;">
+        <label style="display:flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="optNeedCustomer" <?= $needCustomerSign ? 'checked' : '' ?>>Customer signature
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;">
+          <input type="checkbox" id="optNeedCompany" <?= $needCompanySign ? 'checked' : '' ?>>Company signature
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;">
+          Company mode
+          <select id="optCompanyMode">
+            <option value="CHOP_ONLY" <?= $signMode === 'CHOP_ONLY' ? 'selected' : '' ?>>Chop only</option>
+            <option value="SIGN_AND_CHOP" <?= $signMode === 'SIGN_AND_CHOP' ? 'selected' : '' ?>>Sign &amp; Chop</option>
+            <option value="SIGN_ONLY" <?= $signMode === 'SIGN_ONLY' ? 'selected' : '' ?>>Sign only</option>
+          </select>
+        </label>
+        <div style="margin-left:8px;">
+          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . $id . '&customer_id=' . $cid . '&doc=QUOTATION')) ?>" class="btn btn-xs btn-light">Quotation</a>
+          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . $id . '&customer_id=' . $cid . '&doc=INVOICE')) ?>" class="btn btn-xs btn-light">Invoice</a>
+          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . $id . '&customer_id=' . $cid . '&doc=DO')) ?>" class="btn btn-xs btn-light">DO</a>
+        </div>
+      </div>
+    </div>
+  <?php else: ?>
+    <!-- 顾客 portal：外层 user/txn/txn_doc_in.php 已经有 Back / Print，这里就不重复显示任何按钮 -->
+  <?php endif; ?>
 <?php endif; ?>
 
 <div id="doc-print-area" class="doc-print-wrap">

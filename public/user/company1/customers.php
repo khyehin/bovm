@@ -12,42 +12,7 @@ if (!function_exists('h')) {
   function h($v): string { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
 }
 
-$errors = [];
 $ok = (string)($_GET['ok'] ?? '');
-
-// create new customer (force category_id=3)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['_action'] ?? '') === 'create_customer') {
-  $code = trim((string)($_POST['code'] ?? ''));
-  $name = trim((string)($_POST['name'] ?? ''));
-  $contact_name = trim((string)($_POST['contact_name'] ?? ''));
-  $contact_phone = trim((string)($_POST['contact_phone'] ?? ''));
-  $contact_email = trim((string)($_POST['contact_email'] ?? ''));
-
-  if ($code === '') $errors['code'] = 'Code is required';
-  if ($name === '') $errors['name'] = 'Name is required';
-
-  if (!$errors) {
-    try {
-      $st = $pdo->prepare("
-        INSERT INTO customers
-          (category_id, code, name, contact_name, contact_phone, contact_email, is_active, created_at)
-        VALUES
-          (3, :code, :name, :contact_name, :contact_phone, :contact_email, 1, NOW())
-      ");
-      $st->execute([
-        ':code' => $code,
-        ':name' => $name,
-        ':contact_name' => $contact_name,
-        ':contact_phone' => $contact_phone,
-        ':contact_email' => $contact_email,
-      ]);
-      header('Location: ' . url('user/company1/customers.php?ok=1'));
-      exit;
-    } catch (Throwable $e) {
-      $errors['global'] = 'Create failed.';
-    }
-  }
-}
 
 // list customers category_id=3 only
 $rows = [];
@@ -66,6 +31,56 @@ try {
   $rows = [];
 }
 
+// 聚合每个 customer 的 IN / Pending（简化版：只看 IN invoice）
+$summary = [];
+if ($rows) {
+  $ids = array_map(fn($r) => (int)($r['id'] ?? 0), $rows);
+  $ids = array_values(array_filter($ids, fn($v) => $v > 0));
+  if ($ids) {
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    try {
+      $sql = "
+        SELECT customer_id,
+               SUM(
+                 CASE
+                   WHEN txn_type='IN'
+                        AND UPPER(COALESCE(in_kind,''))='INVOICE'
+                        AND UPPER(COALESCE(doc_flow_status,'')) <> 'REJECTED'
+                   THEN COALESCE(order_total, amount)
+                   ELSE 0
+                 END
+               ) AS total_in,
+               SUM(
+                 CASE
+                   WHEN txn_type='IN'
+                        AND UPPER(COALESCE(in_kind,''))='INVOICE'
+                        AND status <> 'CONFIRMED'
+                        AND UPPER(COALESCE(doc_flow_status,'')) <> 'REJECTED'
+                   THEN COALESCE(order_total, amount)
+                   ELSE 0
+                 END
+               ) AS pending_in
+        FROM customer_txn
+        WHERE customer_id IN ($in)
+        GROUP BY customer_id
+      ";
+      $st = $pdo->prepare($sql);
+      $st->execute($ids);
+      foreach ($st->fetchAll() as $s) {
+        $cid = (int)($s['customer_id'] ?? 0);
+        if ($cid > 0) {
+          $summary[$cid] = [
+            'in'      => (float)($s['total_in'] ?? 0),
+            'pending' => (float)($s['pending_in'] ?? 0),
+          ];
+        }
+      }
+    } catch (Throwable $e) {
+      $summary = [];
+    }
+  }
+}
+
 $page_title = 'Customers';
 $active_nav = 'company1_customers';
 include __DIR__ . '/../include/header.php';
@@ -80,16 +95,16 @@ include __DIR__ . '/../include/header.php';
           <h2 class="form-page-title">Customers (Category 3)</h2>
           <div class="form-page-subtitle">Customers that Company1 can create quotations / invoices for.</div>
         </div>
-        <div class="form-page-meta">
+        <div class="form-page-meta" style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
           <a href="<?= h(url('user/company1/invoices.php')) ?>" class="btn btn-light">Invoices &amp; Quotations</a>
+          <a href="<?= h(url('user/company1/customer_add.php')) ?>" class="btn btn-primary">+ Add customer</a>
         </div>
       </div>
 
       <?php if ($ok === '1'): ?>
         <div class="alert-success" style="margin-bottom:10px;">Customer created.</div>
-      <?php endif; ?>
-      <?php if (!empty($errors['global'])): ?>
-        <div class="alert-error" style="margin-bottom:10px;"><?= h($errors['global']) ?></div>
+      <?php elseif ($ok === '2'): ?>
+        <div class="alert-success" style="margin-bottom:10px;">Customer updated.</div>
       <?php endif; ?>
 
       <form method="get" style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
@@ -98,33 +113,45 @@ include __DIR__ . '/../include/header.php';
         <a class="btn btn-light" href="<?= h(url('user/company1/customers.php')) ?>">Reset</a>
       </form>
 
-      <div style="border:1px solid var(--border); border-radius:12px; overflow:hidden; background:#fff; margin-bottom:16px;">
+      <div style="border:1px solid var(--border); border-radius:12px; background:#fff; overflow-x:auto; overflow-y:visible;">
         <table style="width:100%; border-collapse:collapse;">
           <thead>
             <tr style="background:#f3f4f6;">
-              <th style="padding:10px; text-align:left; font-size:12px;">Code</th>
               <th style="padding:10px; text-align:left; font-size:12px;">Name</th>
-              <th style="padding:10px; text-align:left; font-size:12px;">Contact</th>
-              <th style="padding:10px; text-align:left; font-size:12px;">Email</th>
-              <th style="padding:10px; text-align:left; font-size:12px;">Status</th>
+              <th style="padding:10px; text-align:right; font-size:12px;">IN</th>
+              <th style="padding:10px; text-align:right; font-size:12px;">Pending</th>
               <th style="padding:10px; text-align:right; font-size:12px;">Actions</th>
             </tr>
           </thead>
           <tbody>
             <?php if (!$rows): ?>
-              <tr><td colspan="6" style="padding:12px;color:#6b7280;">No customers.</td></tr>
+              <tr><td colspan="4" style="padding:12px;color:#6b7280;">No customers.</td></tr>
             <?php else: ?>
               <?php foreach ($rows as $r): ?>
+                <?php
+                  $cidRow = (int)($r['id'] ?? 0);
+                  $sum = $summary[$cidRow] ?? ['in' => 0.0, 'pending' => 0.0];
+                ?>
                 <tr style="border-top:1px solid var(--border);">
-                  <td style="padding:10px;font-size:12px;"><?= h($r['code'] ?? '') ?></td>
-                  <td style="padding:10px;font-size:12px;"><?= h($r['name'] ?? '') ?></td>
-                  <td style="padding:10px;font-size:12px;"><?= h($r['contact_name'] ?? '') ?> <?= h($r['contact_phone'] ?? '') ?></td>
-                  <td style="padding:10px;font-size:12px;"><?= h($r['contact_email'] ?? '') ?></td>
-                  <td style="padding:10px;font-size:12px;"><?= !empty($r['is_active']) ? 'Active' : 'Inactive' ?></td>
-                  <td style="padding:10px;font-size:12px;text-align:right;display:flex;gap:6px;justify-content:flex-end;">
-                    <a class="btn btn-light btn-sm" href="<?= h(url('user/company1/invoices.php?customer_id=' . (int)$r['id'])) ?>">
-                      Invoices / Quotations
-                    </a>
+                  <td style="padding:10px;font-size:12px;">
+                    <div style="font-weight:600;"><?= h($r['name'] ?? '') ?></div>
+                    <div style="font-size:11px;color:#6b7280;"><?= h($r['code'] ?? '') ?></div>
+                  </td>
+                  <td style="padding:10px;font-size:12px;text-align:right;">
+                    MYR <?= number_format($sum['in'], 2) ?>
+                  </td>
+                  <td style="padding:10px;font-size:12px;text-align:right;">
+                    MYR <?= number_format($sum['pending'], 2) ?>
+                  </td>
+                  <td style="padding:10px;font-size:12px;text-align:right;">
+                    <div class="actions-menu">
+                      <button type="button" class="actions-menu-trigger" aria-expanded="false">⋯</button>
+                      <div class="actions-menu-dropdown">
+                        <a class="actions-menu-item" href="<?= h(url('user/company1/txn_list.php?customer_id=' . $cidRow)) ?>">Transactions</a>
+                        <a class="actions-menu-item" href="<?= h(url('user/company1/invoices.php?customer_id=' . $cidRow)) ?>">Invoices</a>
+                        <a class="actions-menu-item" href="<?= h(url('user/company1/customer_edit.php?id=' . $cidRow)) ?>">Edit details</a>
+                      </div>
+                    </div>
                   </td>
                 </tr>
               <?php endforeach; ?>
@@ -132,37 +159,6 @@ include __DIR__ . '/../include/header.php';
           </tbody>
         </table>
       </div>
-
-      <div style="font-weight:700; margin-bottom:8px;">Add new customer (force Category 3)</div>
-      <form method="post" style="display:grid; gap:10px; max-width:520px;">
-        <input type="hidden" name="_action" value="create_customer">
-
-        <div>
-          <label class="field-label">Code</label>
-          <input type="text" name="code" class="form-control" value="<?= h($_POST['code'] ?? '') ?>">
-          <?php if (!empty($errors['code'])): ?><div class="form-error"><?= h($errors['code']) ?></div><?php endif; ?>
-        </div>
-        <div>
-          <label class="field-label">Name</label>
-          <input type="text" name="name" class="form-control" value="<?= h($_POST['name'] ?? '') ?>">
-          <?php if (!empty($errors['name'])): ?><div class="form-error"><?= h($errors['name']) ?></div><?php endif; ?>
-        </div>
-        <div>
-          <label class="field-label">Contact name</label>
-          <input type="text" name="contact_name" class="form-control" value="<?= h($_POST['contact_name'] ?? '') ?>">
-        </div>
-        <div>
-          <label class="field-label">Contact phone</label>
-          <input type="text" name="contact_phone" class="form-control" value="<?= h($_POST['contact_phone'] ?? '') ?>">
-        </div>
-        <div>
-          <label class="field-label">Contact email</label>
-          <input type="email" name="contact_email" class="form-control" value="<?= h($_POST['contact_email'] ?? '') ?>">
-        </div>
-        <div>
-          <button type="submit" class="btn btn-primary">Create</button>
-        </div>
-      </form>
     </div>
   </div>
 </div>

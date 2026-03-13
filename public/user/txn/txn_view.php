@@ -101,9 +101,12 @@ $requireSignature = (int)($txn['require_signature'] ?? 0) === 1;
 $isInvoiceIn       = ($adminType === 'IN' && $inKind === 'INVOICE');
 $isBonusOrReturnIn = ($adminType === 'IN' && in_array($inKind, ['BONUS', 'RETURN'], true));
 
-// ✅ receipt 只给：admin OUT / bonus / return（invoice 不给）
+// ✅ receipt 只给：admin OUT（非 allocate）/ bonus / return（invoice 不给）
+$isAllocateOut = ($adminType === 'OUT' && $inKind === 'ALLOCATE');
 $shouldShowReceiptBtn = (
   !$isInvoiceIn
+  && !$isContra
+  && !$isAllocateOut
   && (
     $adminType === 'OUT'
     || $isBonusOrReturnIn
@@ -240,6 +243,12 @@ if ($adminType === 'OUT') {
 
 $txnDate = $txn['txn_date'] ?? substr((string)($txn['created_at'] ?? ''), 0, 10);
 
+// doc_flow_status：控制 REJECTED 显示、以及是否允许看 invoice / DO / receipt
+$flowStat = strtoupper(trim((string)($txn['doc_flow_status'] ?? '')));
+if (!in_array($flowStat, ['DRAFT','PROCESSING','COMPLETED','REJECTED'], true)) {
+  $flowStat = 'DRAFT';
+}
+
 $page_title = t('txn.view.page_title', [], 'Transaction detail');
 $active_nav = 'txns';
 
@@ -258,40 +267,39 @@ include __DIR__ . '/../include/header.php';
     </div>
 
     <div class="form-page-meta" style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+      <?php
+        $backHere = url('user/txn/txn_view.php?id=' . (int)$tid . ($backQ ? ('&' . http_build_query($backQ)) : ''));
+        $docInvoiceUrl   = url('user/txn/txn_doc_in.php?id='.(int)$tid.'&customer_id='.$cid.'&doc=INVOICE&back='.rawurlencode($backHere));
+        $docQuotationUrl = url('user/txn/txn_doc_in.php?id='.(int)$tid.'&customer_id='.$cid.'&doc=QUOTATION&back='.rawurlencode($backHere));
+        $docDoUrl        = url('user/txn/txn_doc_in.php?id='.(int)$tid.'&customer_id='.$cid.'&doc=DO&back='.rawurlencode($backHere));
+        $allReceiptsUrl  = url('user/txn/txn_invoice_in.php?id='.(int)$tid.'&back='.rawurlencode($backHere));
+      ?>
+
       <a href="<?= h($backUrl) ?>" class="btn btn-light">
         <?= h(t('txn.view.btn_back', [], 'Back')) ?>
       </a>
+      <?php if ($adminType === 'IN' && !$isContra): ?>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <?php if ($flowStat !== 'REJECTED'): ?>
+            <a href="<?= h($allReceiptsUrl) ?>" class="btn btn-primary btn-sm">
+              View receipts
+            </a>
+          <?php endif; ?>
 
-      <?php
-      // ✅ 右上角主按钮：invoice 就只给 invoice；
-      // ✅ 非 invoice：如果 IN 且有 payments => 跳去 all=1（显示全部 receipts）
-      $btnUrl  = '';
-      $btnText = '';
-      $backHere = url('user/txn/txn_view.php?id=' . (int)$tid . ($backQ ? ('&' . http_build_query($backQ)) : ''));
+          <?php if ($flowStat === 'COMPLETED' || $flowStat === 'PROCESSING'): ?>
+            <a href="<?= h($docInvoiceUrl) ?>" class="btn btn-light btn-sm" target="_blank">
+              Invoice
+            </a>
+            <a href="<?= h($docDoUrl) ?>" class="btn btn-light btn-sm" target="_blank">
+              DO
+            </a>
+          <?php endif; ?>
 
-      $hasAnyPayment = ($adminType === 'IN' && !empty($paymentLines));
-
-      if ($isInvoiceIn) {
-        $btnUrl  = url('user/txn/txn_invoice_in.php?id=' . (int)$tid . '&back=' . urlencode($backHere));
-        $btnText = t('txn.view.btn_invoice', [], 'View invoice');
-      } else {
-        if ($shouldShowReceiptBtn || $canCustomerSign || $hasAnyPayment) {
-          if ($hasAnyPayment) {
-            $btnUrl = url('user/txn/txn_receipt.php?id=' . (int)$tid . '&all=1&back=' . rawurlencode($backHere));
-          } else {
-            $btnUrl = url('user/txn/txn_receipt.php?id=' . (int)$tid . '&back=' . rawurlencode($backHere));
-          }
-          $btnText = $pendingSignature
-            ? t('txn.view.btn_sign', [], 'Sign / View receipt')
-            : t('txn.view.btn_receipt', [], 'View receipt');
-        }
-      }
-      ?>
-
-      <?php if ($btnUrl !== ''): ?>
-        <a href="<?= h($btnUrl) ?>" class="btn btn-primary">
-          <?= h($btnText) ?>
-        </a>
+          <!-- Quotation 总是可以看（无论是 quotation 状态或已 reject） -->
+          <a href="<?= h($docQuotationUrl) ?>" class="btn btn-light btn-sm" target="_blank">
+            Quotation
+          </a>
+        </div>
       <?php endif; ?>
     </div>
   </div>
@@ -325,12 +333,23 @@ include __DIR__ . '/../include/header.php';
     <div style="min-width:160px;">
       <div style="color:#6b7280;"><?= h(t('txn.view.field.status', [], 'Status')) ?></div>
       <div style="margin-top:4px;">
-        <?php if ($status === 'CONFIRMED'): ?>
+        <?php
+          // dashboard / txns 一致：doc_flow_status = REJECTED 时优先显示 REJECTED
+          $rawStatus = strtoupper(trim($status));
+          if ($flowStat === 'REJECTED') {
+            $displayStatus = 'REJECTED';
+          } else {
+            $displayStatus = $rawStatus !== '' ? $rawStatus : 'DRAFT';
+          }
+        ?>
+        <?php if ($displayStatus === 'CONFIRMED'): ?>
           <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#166534;"><?= h(t('status.confirmed', [], 'CONFIRMED')) ?></span>
-        <?php elseif ($status === 'PENDING'): ?>
+        <?php elseif ($displayStatus === 'PENDING'): ?>
           <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#dbeafe;color:#1d4ed8;"><?= h(t('status.pending', [], 'PENDING')) ?></span>
-        <?php elseif ($status === 'SENT'): ?>
+        <?php elseif ($displayStatus === 'SENT'): ?>
           <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fef9c3;color:#854d0e;"><?= h(t('status.sent', [], 'SENT')) ?></span>
+        <?php elseif ($displayStatus === 'REJECTED'): ?>
+          <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fee2e2;color:#b91c1c;">REJECTED</span>
         <?php else: ?>
           <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#e5e7eb;color:#374151;"><?= h(t('status.draft', [], 'DRAFT')) ?></span>
         <?php endif; ?>
@@ -401,10 +420,7 @@ include __DIR__ . '/../include/header.php';
             <label class="field-label" style="margin:0;"><?= h(t('txn.view.section_payments_title', [], 'Payments')) ?></label>
 
             <?php if (!$isInvoiceIn && !empty($paymentLines)): ?>
-              <?php
-                $backHere = url('user/txn/txn_view.php?id=' . (int)$txn['id'] . ($backQ ? ('&' . http_build_query($backQ)) : ''));
-                $allRcpUrl = url('user/txn/txn_receipt.php?id=' . (int)$txn['id'] . '&all=1&back=' . rawurlencode($backHere));
-              ?>
+              <!-- 收据列表已不再提供，保留占位以便以后扩展 -->
             <?php endif; ?>
           </div>
 
@@ -436,7 +452,6 @@ include __DIR__ . '/../include/header.php';
 
                     $backHere = url('user/txn/txn_view.php?id=' . (int)$txn['id'] . ($backQ ? ('&' . http_build_query($backQ)) : ''));
                     $invUrl = url('user/txn/txn_invoice_in.php?id=' . (int)$txn['id'] . '&payment_id=' . (int)$pid . '&back=' . urlencode($backHere));
-                    $rcpUrl = url('user/txn/txn_receipt.php?id=' . (int)$txn['id'] . '&payment_id=' . (int)$pid . '&back=' . rawurlencode($backHere));
                     ?>
                     <tr>
                       <td><?= h($pl['or_no'] ?? '') ?></td>
@@ -464,15 +479,9 @@ include __DIR__ . '/../include/header.php';
                       </td>
 
                       <td>
-                        <?php if ($isInvoiceIn): ?>
-                          <a href="<?= h($invUrl) ?>" class="btn btn-light btn-sm">
-                            <?= h(t('txn.view.btn_invoice', [], 'Invoice')) ?>
-                          </a>
-                        <?php else: ?>
-                          <a href="<?= h($rcpUrl) ?>" class="btn btn-light btn-sm">
-                            <?= h(t('txn.view.btn_receipt', [], 'Receipt')) ?>
-                          </a>
-                        <?php endif; ?>
+                        <a href="<?= h($invUrl) ?>" class="btn btn-light btn-sm">
+                          <?= h(t('txn.view.btn_receipt', [], 'Receipt')) ?>
+                        </a>
                       </td>
                     </tr>
                   <?php endforeach; ?>

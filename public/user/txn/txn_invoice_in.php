@@ -537,9 +537,23 @@ include __DIR__ . '/../include/header.php';
             </div>
           <?php endif; ?>
 
-          <div class="no-print" style="display:flex;gap:6px;margin-top:6px;">
-            <a href="<?= h($backUrl) ?>" class="btn btn-light btn-sm">Back</a>
-            <button type="button" class="btn btn-light btn-sm" onclick="window.print();">Print</button>
+          <?php
+            $docBack = $backUrl;
+            $docInvoiceUrl   = url('user/txn/txn_doc_in.php?id='.$id.'&customer_id='.$cid.'&doc=INVOICE&back='.rawurlencode($docBack));
+            $docQuotationUrl = url('user/txn/txn_doc_in.php?id='.$id.'&customer_id='.$cid.'&doc=QUOTATION&back='.rawurlencode($docBack));
+            $docDoUrl        = url('user/txn/txn_doc_in.php?id='.$id.'&customer_id='.$cid.'&doc=DO&back='.rawurlencode($docBack));
+          ?>
+
+          <div class="no-print" style="display:flex;flex-direction:column;gap:4px;margin-top:6px;align-items:flex-end;">
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+              <a href="<?= h($backUrl) ?>" class="btn btn-light btn-sm">Back</a>
+              <button type="button" class="btn btn-light btn-sm" onclick="window.print();">Print</button>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+              <a href="<?= h($docInvoiceUrl) ?>" class="btn btn-light btn-sm" target="_blank">Invoice</a>
+              <a href="<?= h($docDoUrl) ?>" class="btn btn-light btn-sm" target="_blank">DO</a>
+              <a href="<?= h($docQuotationUrl) ?>" class="btn btn-light btn-sm" target="_blank">Quotation</a>
+            </div>
           </div>
         </div>
       </div>

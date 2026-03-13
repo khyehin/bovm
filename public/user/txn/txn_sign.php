@@ -86,12 +86,6 @@ if (!$isOut || $isContra || !$needSig) {
   exit;
 }
 
-// ✅ 统一：签名、显示、打印全部交给 txn_receipt.php（你现在的主逻辑）
-$target = url('user/txn/txn_receipt.php?id=' . (int)$txn['id'] . '&back=' . rawurlencode($back));
-
-// 如果你想：一进去就看到签名区（可选）
-// 你的 txn_receipt.php 目前签名区在页面下面，不需要也行
-// $target .= '#sign';
-
-header('Location: ' . $target);
+// 之前跳转到 txn_receipt.php 做签名；现在收据页已停用，直接回原页面。
+header('Location: ' . $back);
 exit;

@@ -52,22 +52,31 @@ if (!function_exists('h')) {
         <?= h(t('portal.sidebar.txns', [], 'Transactions / Reports')) ?>
       </a>
 
-      <a href="<?= h(url('user/txn/invoices.php')) ?>"
-         class="sidebar-link <?= $active_nav === 'invoices' ? 'active' : '' ?>">
-        <?= h(t('portal.sidebar.invoices', [], 'Invoices / Quotations')) ?>
-      </a>
-
-      <?php if ($custCat === 1): ?>
-      <a href="<?= h(url('user/company1/customers.php')) ?>"
-         class="sidebar-link <?= $active_nav === 'company1_customers' ? 'active' : '' ?>">
-        Company1 · Customers
-      </a>
-      <a href="<?= h(url('user/company1/invoices.php')) ?>"
-         class="sidebar-link <?= $active_nav === 'company1_invoices' ? 'active' : '' ?>">
-        Company1 · Invoices
-      </a>
+      <?php if ($custCat !== 1): ?>
+        <a href="<?= h(url('user/txn/invoices.php')) ?>"
+           class="sidebar-link <?= $active_nav === 'invoices' ? 'active' : '' ?>">
+          <?= h(t('portal.sidebar.invoices', [], 'Invoices / Quotations')) ?>
+        </a>
       <?php endif; ?>
     </div>
+
+    <?php if ($custCat === 1): ?>
+      <!-- Invoice section for Company1 -->
+      <div class="sidebar-section">
+        <div class="sidebar-section-title">
+          Invoice
+        </div>
+
+        <a href="<?= h(url('user/company1/customers.php')) ?>"
+           class="sidebar-link <?= $active_nav === 'company1_customers' ? 'active' : '' ?>">
+          Customers
+        </a>
+        <a href="<?= h(url('user/company1/invoices.php')) ?>"
+           class="sidebar-link <?= $active_nav === 'company1_invoices' ? 'active' : '' ?>">
+          Invoices
+        </a>
+      </div>
+    <?php endif; ?>
 
     <!-- Settings -->
     <div class="sidebar-section">

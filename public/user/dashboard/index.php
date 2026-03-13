@@ -238,11 +238,24 @@ include __DIR__ . '/../include/header.php';
               <?php if (!empty($r['ref_no'])): ?><div style="font-size:11px;color:#6b7280;">Ref: <?= h($r['ref_no']) ?></div><?php endif; ?>
             </td>
             <td style="text-align:right; font-weight:600; color:<?= h($amountColor) ?>;"><?= h($ccy) ?> <?= number_format($amount, 2) ?></td>
+            <?php
+              $rawStatus = (string)($r['status'] ?? '');
+              $flowStat  = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+              if ($flowStat === 'REJECTED') {
+                $displayStatus = 'REJECTED';
+              } else {
+                $displayStatus = strtoupper($rawStatus ?: 'DRAFT');
+              }
+            ?>
             <td>
-              <?php if ($r['status'] === 'SENT'): ?>
+              <?php if ($displayStatus === 'SENT'): ?>
                 <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fef9c3;color:#854d0e;"><?= h(t('portal.status.sent', [], 'SENT')) ?></span>
+              <?php elseif ($displayStatus === 'CONFIRMED'): ?>
+                <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#166534;"><?= h(t('portal.status.confirmed', [], 'CONFIRMED')) ?></span>
+              <?php elseif ($displayStatus === 'REJECTED'): ?>
+                <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fee2e2;color:#b91c1c;">REJECTED</span>
               <?php else: ?>
-                <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#e5e7eb;color:#374151;"><?= h($r['status']) ?></span>
+                <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#e5e7eb;color:#374151;"><?= h(t('portal.status.draft', [], 'DRAFT')) ?></span>
               <?php endif; ?>
             </td>
             <td><a href="<?= h($signUrl) ?>" class="btn btn-primary" style="font-size:12px;padding:5px 10px;"><?= h(t('portal.dashboard.pending_sign_btn', [], 'Sign')) ?></a></td>
@@ -421,11 +434,22 @@ include __DIR__ . '/../include/header.php';
                   <?php if (!empty($r['ref_no'])): ?><div style="font-size:11px;color:#6b7280;">Ref: <?= h($r['ref_no']) ?></div><?php endif; ?>
                 </td>
                 <td style="text-align:right; color:#166534; font-weight:600;"><?= h($r['currency'] ?: $currency) ?> <?= number_format($amount, 2) ?></td>
+                <?php
+                  $rawStatus = (string)($r['status'] ?? '');
+                  $flowStat  = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+                  if ($flowStat === 'REJECTED') {
+                    $displayStatus = 'REJECTED';
+                  } else {
+                    $displayStatus = strtoupper($rawStatus ?: 'DRAFT');
+                  }
+                ?>
                 <td>
-                  <?php if ($r['status'] === 'CONFIRMED'): ?>
+                  <?php if ($displayStatus === 'CONFIRMED'): ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#166534;"><?= h(t('portal.status.confirmed', [], 'CONFIRMED')) ?></span>
-                  <?php elseif ($r['status'] === 'SENT'): ?>
+                  <?php elseif ($displayStatus === 'SENT'): ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fef9c3;color:#854d0e;"><?= h(t('portal.status.sent', [], 'SENT')) ?></span>
+                  <?php elseif ($displayStatus === 'REJECTED'): ?>
+                    <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fee2e2;color:#b91c1c;">REJECTED</span>
                   <?php else: ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#e5e7eb;color:#374151;"><?= h(t('portal.status.draft', [], 'DRAFT')) ?></span>
                   <?php endif; ?>
@@ -462,11 +486,22 @@ include __DIR__ . '/../include/header.php';
                   <?php if (!empty($r['ref_no'])): ?><div style="font-size:11px;color:#6b7280;">Ref: <?= h($r['ref_no']) ?></div><?php endif; ?>
                 </td>
                 <td style="text-align:right; color:#b91c1c; font-weight:600;"><?= h($r['currency'] ?: $currency) ?> <?= number_format($amount, 2) ?></td>
+                <?php
+                  $rawStatus = (string)($r['status'] ?? '');
+                  $flowStat  = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+                  if ($flowStat === 'REJECTED') {
+                    $displayStatus = 'REJECTED';
+                  } else {
+                    $displayStatus = strtoupper($rawStatus ?: 'DRAFT');
+                  }
+                ?>
                 <td>
-                  <?php if ($r['status'] === 'CONFIRMED'): ?>
+                  <?php if ($displayStatus === 'CONFIRMED'): ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#ecfdf5;color:#166534;"><?= h(t('portal.status.confirmed', [], 'CONFIRMED')) ?></span>
-                  <?php elseif ($r['status'] === 'SENT'): ?>
+                  <?php elseif ($displayStatus === 'SENT'): ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fef9c3;color:#854d0e;"><?= h(t('portal.status.sent', [], 'SENT')) ?></span>
+                  <?php elseif ($displayStatus === 'REJECTED'): ?>
+                    <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#fee2e2;color:#b91c1c;">REJECTED</span>
                   <?php else: ?>
                     <span style="font-size:11px;padding:3px 9px;border-radius:999px;background:#e5e7eb;color:#374151;"><?= h(t('portal.status.draft', [], 'DRAFT')) ?></span>
                   <?php endif; ?>

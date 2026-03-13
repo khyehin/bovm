@@ -3,8 +3,18 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../../config/bootstrap.php';
-require_admin();
-require_perm('TXN.E');
+
+// 允许从 Company1 入口复用本页面：
+// 若定义 ALLOW_TXN_IN_FROM_COMPANY1=true，则跳过 require_admin，并由外层负责 header/footer。
+$allowFromCompany1 = false;
+if (defined('ALLOW_TXN_IN_FROM_COMPANY1') && constant('ALLOW_TXN_IN_FROM_COMPANY1') === true) {
+    $allowFromCompany1 = true;
+}
+
+if (!$allowFromCompany1) {
+    require_admin();
+    require_perm('TXN.E');
+}
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
@@ -456,12 +466,21 @@ if (!$customer) {
 }
 
 // ---------- Bank Accounts ----------
-$bankRows = $pdo->query("
+$bankSql = "
     SELECT id, bank_code, account_name, account_no, currency
     FROM company_bank_accounts
     WHERE is_active = 1
-    ORDER BY bank_code, account_name, account_no, id
-")->fetchAll();
+";
+// 如果从 Company1 入口过来，并且定义了白名单常量，则限制 bank id
+if ($allowFromCompany1 && defined('TXN_IN_BANK_ID_WHITELIST')) {
+    $idsConst = (string)constant('TXN_IN_BANK_ID_WHITELIST');
+    $ids = preg_replace('/[^0-9,]/', '', $idsConst);
+    if ($ids !== '') {
+        $bankSql .= " AND id IN (" . $ids . ")";
+    }
+}
+$bankSql .= " ORDER BY bank_code, account_name, account_no, id";
+$bankRows = $pdo->query($bankSql)->fetchAll();
 
 function bank_label(array $b): string
 {
@@ -644,6 +663,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $postInKind = strtoupper(trim((string)($_POST['in_kind'] ?? ($txn['in_kind'] ?? 'INVOICE'))));
     if (!in_array($postInKind, $validInKinds, true)) $postInKind = 'INVOICE';
+
+    // Company1 入口：IN 类型和金额从现有交易锁定，不能被前端篡改
+    if ($allowFromCompany1) {
+        if (isset($txn['in_kind'])) {
+            $postInKind = strtoupper(trim((string)$txn['in_kind']));
+            if (!in_array($postInKind, $validInKinds, true)) {
+                $postInKind = 'INVOICE';
+            }
+        }
+        if (isset($txn['order_total'])) {
+            $order_total = (float)$txn['order_total'];
+        }
+    }
 
     // ✅ 默认 title（server side：避免空）
     if ($title === '') {
@@ -1450,7 +1482,9 @@ if ((int)($txn['id'] ?? 0) > 0) {
 
 // ---------- page ----------
 $page_title = (tt('admin.txn_in.page_title', 'IN Transaction') . ' · ' . ($customer['name'] ?? 'Customer'));
-include __DIR__ . '/../include/header.php';
+if (!$allowFromCompany1) {
+    include __DIR__ . '/../include/header.php';
+}
 
 $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
 ?>
@@ -1581,20 +1615,33 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                     $flowTypeNow = strtoupper((string)($txn['doc_flow_type'] ?? 'NORMAL'));
                     if (!in_array($flowTypeNow, ['NORMAL', 'QUOTATION'], true)) $flowTypeNow = 'NORMAL';
                     $flowLabelNow = ($flowTypeNow === 'QUOTATION') ? 'Quotation' : 'Invoice';
+
+                    // Back：优先用调用方传入的 back（例如 user 端），否则退回默认列表
+                    $backPath = '';
+                    if (!empty($GLOBALS['_TXN_IN_BACK_URL_FROM_PORTAL'] ?? '')) {
+                        $backPath = (string)$GLOBALS['_TXN_IN_BACK_URL_FROM_PORTAL'];
+                    } else {
+                        $backPath = $allowFromCompany1
+                            ? 'user/company1/txn_list.php?customer_id=' . (int)$customer_id
+                            : 'admin/customers/txn_list.php?customer_id=' . (int)$customer_id;
+                    }
+                    $docBase = $allowFromCompany1
+                        ? 'user/company1/txn_doc_in.php'
+                        : 'admin/customers/txn_doc_in.php';
                     ?>
                     <div style="margin-bottom:8px;font-size:12px;color:#6b7280;">
                         Flow: <strong><?= h($flowLabelNow) ?></strong>
                     </div>
-                    <a href="<?= h(url('admin/customers/txn_list.php?customer_id=' . $customer_id)) ?>" class="btn btn-light">
+                    <a href="<?= h(url($backPath)) ?>" class="btn btn-light">
                         <?= h(tt('admin.txn_in.back', '← Back to transactions')) ?>
                     </a>
                     <?php if (!empty($txn['id'])): ?>
-                        <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light" style="margin-top:6px;">
+                        <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light" style="margin-top:6px;">
                             View Quotation
                         </a>
                         <?php if ($flowTypeNow === 'NORMAL' || trim((string)($txn['invoice_no'] ?? '')) !== ''): ?>
-                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light" style="margin-top:6px;">View Invoice</a>
-                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light" style="margin-top:6px;">View DO</a>
+                            <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light" style="margin-top:6px;">View Invoice</a>
+                            <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light" style="margin-top:6px;">View DO</a>
                         <?php endif; ?>
                     <?php endif; ?>
                 </div>
@@ -1632,7 +1679,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
 
                         <div class="form-group">
                             <label class="field-label"><?= h(tt('admin.txn_in.field.in_type', 'IN type')) ?></label>
-                            <select name="in_kind" id="in_kind_select" class="form-control">
+                            <select name="in_kind" id="in_kind_select" class="form-control" <?= $allowFromCompany1 ? 'disabled' : '' ?>>
                                 <option value="INVOICE" <?= (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE') ? 'selected' : '' ?>>
                                     <?= h(tt('admin.txn_in.in_kind.invoice', 'Invoice / normal IN')) ?>
                                 </option>
@@ -1683,7 +1730,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                             </label>
                             <div class="amount-row">
                                 <input type="number" step="0.01" min="0" name="order_total" class="form-control amount-input"
-                                    value="<?= h($txn['order_total'] ?? 0) ?>">
+                                    value="<?= h($txn['order_total'] ?? 0) ?>" <?= $allowFromCompany1 ? 'readonly style="background:#f9fafb;"' : '' ?>>
                                 <input type="text" name="txn_currency" class="form-control amount-currency-input"
                                     value="<?= h($txn['currency'] ?? 'MYR') ?>"
                                     placeholder="<?= h(tt('admin.txn_in.currency_ph', 'MYR / USD / SGD ...')) ?>">
@@ -1936,10 +1983,10 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                     <div class="form-group" style="margin-top:14px;">
                         <div style="font-weight:600;margin-bottom:6px;">Quotation / Invoice / DO</div>
                         <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px;">
-                            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light btn-sm">View Quotation</a>
+                            <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=QUOTATION')) ?>" class="btn btn-light btn-sm">View Quotation</a>
                             <?php if ($flowTypeNow === 'NORMAL' || trim((string)($txn['invoice_no'] ?? '')) !== ''): ?>
-                                <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light btn-sm">View Invoice</a>
-                                <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light btn-sm">View DO</a>
+                                <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=INVOICE')) ?>" class="btn btn-light btn-sm">View Invoice</a>
+                                <a href="<?= h(url($docBase . '?id=' . (int)$txn['id'] . '&customer_id=' . $customer_id . '&doc=DO')) ?>" class="btn btn-light btn-sm">View DO</a>
                             <?php endif; ?>
                         </div>
                         <?php if ($hasColRequireSignQuotation || $hasColRequireSignInvoice || $hasColRequireSignDo): ?>
@@ -2319,4 +2366,4 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
     });
 </script>
 
-<?php include __DIR__ . '/../include/footer.php'; ?>
+<?php if (!$allowFromCompany1) include __DIR__ . '/../include/footer.php'; ?>

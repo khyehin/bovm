@@ -289,7 +289,7 @@ include __DIR__ . '/../include/header.php';
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;">
           <button type="submit" class="btn btn-primary">Save Quotation</button>
           <?php if ($id > 0): ?>
-            <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$id . '&customer_id=' . (int)$cid . '&doc=QUOTATION')) ?>" target="_blank" class="btn btn-light">Print / PDF</a>
+            <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . (int)$id . '&customer_id=' . (int)$cid . '&doc=QUOTATION')) ?>" target="_blank" class="btn btn-light">Print / PDF</a>
           <?php endif; ?>
           <a href="<?= h(url('user/company1/invoices.php?customer_id=' . (int)$cid)) ?>" class="btn btn-light">Cancel</a>
         </div>

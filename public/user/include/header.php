@@ -56,6 +56,8 @@ $displayLang = $langLabelMap[$currentLang] ?? 'English';
 
   <!-- Customer portal 自己的 CSS（里面有 @import admin 的） -->
   <link rel="stylesheet" href="<?= h(url('user/assets/style.css')) ?>">
+  <!-- 复用后台 actions menu 的样式，让 user 端的 ⋯ 菜单跟 admin 一致 -->
+  <link rel="stylesheet" href="<?= h(url('admin/assets/css/admin-actions-menu.css')) ?>">
 </head>
 
 <body class="admin-body">

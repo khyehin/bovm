@@ -186,6 +186,56 @@ include __DIR__ . '/../include/header.php';
         </div>
       </div>
 
+      <?php if ($customer): ?>
+        <div class="admin-card" style="margin-bottom:14px;">
+          <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;font-size:13px;">
+            <div>
+              <div style="font-weight:600;margin-bottom:4px;"><?= h($customer['name'] ?? '') ?></div>
+              <?php if (!empty($customer['code'])): ?>
+                <div style="color:#6b7280;">Code: <?= h((string)$customer['code']) ?></div>
+              <?php endif; ?>
+              <?php
+                try {
+                  $stInfo = $pdo->prepare("SELECT contact_name, contact_phone, contact_email, address1, address2, address3, city, state, postcode, country FROM customers WHERE id = :id");
+                  $stInfo->execute([':id' => $cid]);
+                  $info = $stInfo->fetch() ?: [];
+                } catch (Throwable $e) {
+                  $info = [];
+                }
+              ?>
+              <?php if (!empty($info['contact_name']) || !empty($info['contact_phone']) || !empty($info['contact_email'])): ?>
+                <div style="margin-top:4px;color:#374151;">
+                  <?php if (!empty($info['contact_name'])): ?>
+                    <div>Contact: <?= h((string)$info['contact_name']) ?></div>
+                  <?php endif; ?>
+                  <?php if (!empty($info['contact_phone'])): ?>
+                    <div>Phone: <?= h((string)$info['contact_phone']) ?></div>
+                  <?php endif; ?>
+                  <?php if (!empty($info['contact_email'])): ?>
+                    <div>Email: <?= h((string)$info['contact_email']) ?></div>
+                  <?php endif; ?>
+                </div>
+              <?php endif; ?>
+            </div>
+            <div style="max-width:280px;color:#6b7280;">
+              <?php
+                $addrLines = [];
+                if (!empty($info['address1'])) $addrLines[] = (string)$info['address1'];
+                if (!empty($info['address2'])) $addrLines[] = (string)$info['address2'];
+                if (!empty($info['address3'])) $addrLines[] = (string)$info['address3'];
+                $cityLine = trim(((string)($info['postcode'] ?? '') . ' ' . (string)($info['city'] ?? '')));
+                if ($cityLine !== '') $addrLines[] = $cityLine;
+                $stateCountry = trim(((string)($info['state'] ?? '') . ', ' . (string)($info['country'] ?? '')));
+                if ($stateCountry !== ',') $addrLines[] = $stateCountry;
+              ?>
+              <?php if ($addrLines): ?>
+                <div style="white-space:pre-line;"><?= h(implode("\n", $addrLines)) ?></div>
+              <?php endif; ?>
+            </div>
+          </div>
+        </div>
+      <?php endif; ?>
+
       <div class="admin-card" style="margin-bottom:14px;">
         <form method="post" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
           <input type="hidden" name="action" value="create_quotation">
@@ -322,11 +372,11 @@ include __DIR__ . '/../include/header.php';
                             <input type="hidden" name="next_status" value="REJECTED">
                             <button type="submit" class="actions-menu-item" style="width:100%;text-align:left;border:none;background:transparent;cursor:pointer;">Reject</button>
                           </form>
-                          <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=QUOTATION')) ?>" class="actions-menu-item" target="_blank">View Quotation</a>
+                          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=QUOTATION')) ?>" class="actions-menu-item" target="_blank">View Quotation</a>
                         <?php else: ?>
                           <a href="<?= h(url('user/company1/txn_edit_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid)) ?>" class="actions-menu-item">View / edit IN</a>
-                          <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=INVOICE')) ?>" class="actions-menu-item" target="_blank">View Invoice</a>
-                          <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=DO')) ?>" class="actions-menu-item" target="_blank">View DO</a>
+                          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=INVOICE')) ?>" class="actions-menu-item" target="_blank">View Invoice</a>
+                          <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=DO')) ?>" class="actions-menu-item" target="_blank">View DO</a>
                         <?php endif; ?>
                       </div>
                     </div>

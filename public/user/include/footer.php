@@ -41,6 +41,43 @@ document.addEventListener('DOMContentLoaded', function () {
             m.style.display = 'none';
         });
     }
+
+    // 初始化：隐藏所有 actions dropdown
+    document.querySelectorAll('.actions-menu .actions-menu-dropdown').forEach(function (dd) {
+        dd.style.display = 'none';
+    });
+
+    // Actions dropdown（和 admin 行为类似，但直接控制 display）
+    document.addEventListener('click', function (e) {
+        var trigger = e.target.closest('.actions-menu-trigger');
+        var menu    = e.target.closest('.actions-menu');
+
+        // 先关闭所有已打开的菜单
+        document.querySelectorAll('.actions-menu .actions-menu-dropdown').forEach(function (dd) {
+            dd.style.display = 'none';
+        });
+
+        // 点到三粒点
+        if (trigger && menu) {
+            e.preventDefault();
+            e.stopPropagation();
+            var dropdown = menu.querySelector('.actions-menu-dropdown');
+            if (dropdown) {
+                dropdown.style.display = 'block';
+            }
+            return;
+        }
+
+        // 如果点到的是菜单内部的其他元素，就不要马上关掉
+        if (e.target.closest('.actions-menu')) {
+            return;
+        }
+
+        // 点击页面其它地方 → 关闭所有菜单（上面已经关过一次，这里兜底）
+        document.querySelectorAll('.actions-menu .actions-menu-dropdown').forEach(function (dd) {
+            dd.style.display = 'none';
+        });
+    });
 });
 </script>
 

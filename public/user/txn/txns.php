@@ -371,7 +371,7 @@ include __DIR__ . '/../include/header.php';
           $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
           if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
 
-          // Pending：只有 admin IN + INVOICE，且非 REJECTED
+          // Pending：只有 admin IN + INVOICE，且流程未 REJECTED
           $pendingVal = 0.0;
           if ($adminType === 'IN' && $inKind === 'INVOICE') {
               $orderTotal = (float)($r['order_total'] ?? $amount);
@@ -429,18 +429,32 @@ include __DIR__ . '/../include/header.php';
             <?= h($rowCurrency) ?> <?= number_format($pendingVal, 2) ?>
           </td>
 
+          <?php
+            $rawStatus = (string)($r['status'] ?? '');
+            $flowStat  = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));
+            // doc_flow_status = REJECTED 时，优先显示 REJECTED
+            if ($flowStat === 'REJECTED') {
+              $displayStatus = 'REJECTED';
+            } else {
+              $displayStatus = strtoupper($rawStatus ?: 'DRAFT');
+            }
+          ?>
           <td>
-            <?php if (($r['status'] ?? '') === 'CONFIRMED'): ?>
+            <?php if ($displayStatus === 'CONFIRMED'): ?>
               <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#ecfdf5; color:#166534;">
                 <?= h(t('status.confirmed')) ?>
               </span>
-            <?php elseif (($r['status'] ?? '') === 'PENDING'): ?>
+            <?php elseif ($displayStatus === 'PENDING'): ?>
               <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#dbeafe; color:#1d4ed8;">
                 <?= h(t('status.pending')) ?>
               </span>
-            <?php elseif (($r['status'] ?? '') === 'SENT'): ?>
+            <?php elseif ($displayStatus === 'SENT'): ?>
               <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#fef9c3; color:#854d0e;">
                 <?= h(t('status.sent')) ?>
+              </span>
+            <?php elseif ($displayStatus === 'REJECTED'): ?>
+              <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#fee2e2; color:#b91c1c;">
+                REJECTED
               </span>
             <?php else: ?>
               <span style="font-size:11px; padding:3px 9px; border-radius:999px; background:#e5e7eb; color:#374151;">
