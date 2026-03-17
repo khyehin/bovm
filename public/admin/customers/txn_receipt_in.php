@@ -5,13 +5,29 @@ declare(strict_types=1);
 require_once __DIR__ . '/../../../config/bootstrap.php';
 
 require_login();
-require_admin();
-if (function_exists('require_perm')) {
-  require_perm('TXN.V');
+// 允许从 portal 复用（Company1 / customer portals）
+$allowFromPortal = false;
+if (defined('ALLOW_TXN_RECEIPT_IN_FROM_PORTAL') && ALLOW_TXN_RECEIPT_IN_FROM_PORTAL === true) $allowFromPortal = true;
+if (defined('ALLOW_TXN_RECEIPT_IN_FROM_COMPANY1') && ALLOW_TXN_RECEIPT_IN_FROM_COMPANY1 === true) $allowFromPortal = true;
+
+if (!$allowFromPortal) {
+  require_admin();
+  if (function_exists('require_perm')) {
+    require_perm('TXN.V');
+  }
 }
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+// portal/self url（Company1 复用时，页面内部链接不能指向 admin，否则会 forbidden）
+$selfReceiptBase = 'admin/customers/txn_receipt_in.php';
+$selfExtraQuery  = '';
+if ($allowFromPortal && defined('ALLOW_TXN_RECEIPT_IN_FROM_COMPANY1') && ALLOW_TXN_RECEIPT_IN_FROM_COMPANY1 === true) {
+  $selfReceiptBase = 'user/company1/txn_receipt_in.php';
+  // Company1 入口需要 customer_id 来通过 wrapper 校验
+  $selfExtraQuery  = '&customer_id='; // 后面拿到 txn 后补
+}
 
 if (!function_exists('h')) {
   function h($v): string
@@ -245,6 +261,19 @@ if ((string)$txn['txn_type'] !== 'IN') {
   exit('This page is only for IN transactions.');
 }
 
+// 补齐 Company1 self url 的 customer_id 参数
+if ($selfExtraQuery === '&customer_id=') {
+  $selfExtraQuery = '&customer_id=' . (int)$txn['customer_id'];
+}
+
+function receipt_self_url(string $base, int $id, ?int $paymentId, string $extraQuery = ''): string
+{
+  $q = 'id=' . (int)$id;
+  if ($paymentId !== null && $paymentId > 0) $q .= '&payment_id=' . (int)$paymentId;
+  if ($extraQuery !== '') $q .= $extraQuery;
+  return url($base . '?' . $q);
+}
+
 // ===== IN 类型（INVOICE / RETURN / BONUS） =====
 $inKind = strtoupper(trim((string)($txn['in_kind'] ?? 'INVOICE')));
 if (!in_array($inKind, ['INVOICE', 'RETURN', 'BONUS'], true)) $inKind = 'INVOICE';
@@ -253,13 +282,16 @@ if (!in_array($inKind, ['INVOICE', 'RETURN', 'BONUS'], true)) $inKind = 'INVOICE
 $customerName  = (string)($txn['customer_name'] ?? '');
 $customerRegNo = (string)($txn['customer_reg_no'] ?? '');
 
-// ✅ Back：永远回 txn_list（url），并把 filters 带回去
+// ✅ Back：默认回 txn_list，并把 filters 带回去（portal 可覆盖）
 $backKeys = ['date_from','date_to','type','status','method','q'];
 $qBack = ['customer_id' => (int)$txn['customer_id']];
 foreach ($backKeys as $k) {
   if (isset($_GET[$k]) && $_GET[$k] !== '') $qBack[$k] = (string)$_GET[$k];
 }
 $back = url('admin/customers/txn_list.php' . ($qBack ? ('?' . http_build_query($qBack)) : ''));
+if (isset($_TXN_RECEIPT_IN_BACK_URL_FROM_PORTAL) && is_string($_TXN_RECEIPT_IN_BACK_URL_FROM_PORTAL) && $_TXN_RECEIPT_IN_BACK_URL_FROM_PORTAL !== '') {
+  $back = $_TXN_RECEIPT_IN_BACK_URL_FROM_PORTAL;
+}
 
 // ====== 所有 payment（所有 receipts）======
 $st = $pdo->prepare("
@@ -334,6 +366,8 @@ $canPaySig = isset($payCols['receiver_signature_image']) && isset($payCols['paye
 $company = function_exists('get_company') ? get_company() : ['name' => 'VISION MIX SDN BHD', 'reg_no' => '1622729-U', 'address' => ['LOT 3A-02A, 4TH FLOOR ENDAH PARADE,', 'NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,', '57000 KUALA LUMPUR'], 'phone' => '', 'email' => ''];
 $companyName = (string)($company['name'] ?? '');
 $companyRegNo = (string)($company['reg_no'] ?? '');
+$companyTaxNo = (string)($company['tax_no'] ?? '');
+$companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $companyTaxNo) : '') . ($companyRegNo !== '' ? (' (' . $companyRegNo . ')') : ''));
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
@@ -409,7 +443,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'save
 
       recompute_in_txn_status($pdo, (int)$id);
 
-      header('Location: ' . url('admin/customers/txn_receipt_in.php?id=' . $id . '&payment_id=' . $pid));
+      header('Location: ' . receipt_self_url($selfReceiptBase, (int)$id, (int)$pid, $selfExtraQuery));
       exit;
     }
   }
@@ -417,7 +451,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['_action'] ?? '') === 'save
 
 // ✅ 页面标题
 $page_title = $pageTitleText . ' #TXN-' . $id;
-include __DIR__ . '/../include/header.php';
+if (!$allowFromPortal) {
+  include __DIR__ . '/../include/header.php';
+}
 ?>
 
 <style>
@@ -528,6 +564,17 @@ include __DIR__ . '/../include/header.php';
 .receipt-chop { position:absolute; right:4px; bottom:3px; max-height:55px; opacity:0.95; }
 
 .sig-canvas { width:100%; max-width:100%; height:180px; border-radius:10px; background:#f9fafb; border:1px dashed #d1d5db; touch-action:none; }
+
+@media print {
+  /* 打印时不显示签名输入区域，只保留签名图片和下方文字 */
+  .sig-canvas,
+  .no-print {
+    display:none !important;
+  }
+  .receipt-sig-box {
+    border:0 !important;
+  }
+}
 </style>
 
 <div class="admin-main">
@@ -609,7 +656,7 @@ include __DIR__ . '/../include/header.php';
                   <tr>
                     <td class="receipt-logo" width="25%"><img src="<?= h($logoUrl) ?>" alt="Logo"></td>
                     <td class="receipt-company-block" width="45%">
-                      <div class="receipt-company-name"><?= h($companyName) ?><?= $companyRegNo !== '' ? ' (' . h($companyRegNo) . ')' : '' ?></div>
+                      <div class="receipt-company-name"><?= h($companyHeaderLine) ?></div>
                       <?php foreach ($companyAddress as $line): if (trim($line) === '') continue; ?>
                       <div><?= h($line) ?></div>
                       <?php endforeach; ?>
@@ -673,14 +720,17 @@ include __DIR__ . '/../include/header.php';
                     <?php if ($signPayer): ?>
                     <td class="receipt-sign-cell">
                       <div class="receipt-sign-block">
-                        <div style="margin-bottom:4px;">DATE:</div>
-                        <div style="border-bottom:1px solid #000;min-height:20px;margin-bottom:12px;"></div>
-                        <div style="font-weight:bold;margin-bottom:4px;">RECEIVED BY AND COMPANY STAMP:</div>
                         <div class="receipt-sig-box">
                           <?php if ($cusSig !== ''): ?>
                             <img src="<?= h($cusSig) ?>" class="receipt-sig-main" alt="Customer Signature">
                           <?php endif; ?>
                         </div>
+                  <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
+                    RECEIVED BY AND COMPANY STAMP
+                  </div>
+                  <div style="margin-top:4px;font-size:9px;">
+                    Date: <?= h($meta['receiptDate']) ?>
+                  </div>
                       </div>
                     </td>
                     <?php endif; ?>
@@ -698,6 +748,9 @@ include __DIR__ . '/../include/header.php';
                         <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
                           <?= $needOurSig ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
                         </div>
+                  <div style="margin-top:4px;font-size:9px;">
+                    Date: <?= h($meta['receiptDate']) ?>
+                  </div>
                       </div>
                     </td>
                   </tr>
@@ -706,7 +759,7 @@ include __DIR__ . '/../include/header.php';
                 <?php if (($signReceive || $signPayer) && $canPaySig): ?>
                   <div class="no-print" style="margin-top:10px; text-align:right;">
                     <a class="btn btn-light btn-sm"
-                      href="<?= h(url('admin/customers/txn_receipt_in.php?id='.$id.'&payment_id='.(int)$p['id'])) ?>">
+                      href="<?= h(receipt_self_url($selfReceiptBase, (int)$id, (int)$p['id'], $selfExtraQuery)) ?>">
                       Sign this receipt
                     </a>
                   </div>
@@ -755,7 +808,7 @@ include __DIR__ . '/../include/header.php';
                 <tr>
                   <td class="receipt-logo" width="25%"><img src="<?= h($logoUrl) ?>" alt="Logo"></td>
                   <td class="receipt-company-block" width="45%">
-                    <div class="receipt-company-name"><?= h($companyName) ?><?= $companyRegNo !== '' ? ' (' . h($companyRegNo) . ')' : '' ?></div>
+                    <div class="receipt-company-name"><?= h($companyHeaderLine) ?></div>
                     <?php foreach ($companyAddress as $line): if (trim($line) === '') continue; ?>
                     <div><?= h($line) ?></div>
                     <?php endforeach; ?>
@@ -819,13 +872,16 @@ include __DIR__ . '/../include/header.php';
                   <?php if ($signPayer): ?>
                   <td class="receipt-sign-cell">
                     <div class="receipt-sign-block">
-                      <div style="margin-bottom:4px;">DATE:</div>
-                      <div style="border-bottom:1px solid #000;min-height:20px;margin-bottom:12px;"></div>
-                      <div style="font-weight:bold;margin-bottom:4px;">RECEIVED BY AND COMPANY STAMP:</div>
                       <div class="receipt-sig-box">
                         <?php if ($cusSig !== ''): ?>
                           <img src="<?= h($cusSig) ?>" class="receipt-sig-main" alt="Customer Signature">
                         <?php endif; ?>
+                      </div>
+                      <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
+                        RECEIVED BY AND COMPANY STAMP
+                      </div>
+                      <div style="margin-top:4px;font-size:9px;">
+                        Date: <?= h($meta['receiptDate']) ?>
                       </div>
                     </div>
                   </td>
@@ -843,6 +899,9 @@ include __DIR__ . '/../include/header.php';
                       </div>
                       <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
                         <?= $needOurSig ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
+                      </div>
+                      <div style="margin-top:4px;font-size:9px;">
+                        Date: <?= h($meta['receiptDate']) ?>
                       </div>
                     </div>
                   </td>
@@ -896,14 +955,14 @@ include __DIR__ . '/../include/header.php';
                 </div>
 
                 <div class="no-print" style="margin-top:12px;display:flex;justify-content:space-between;">
-                  <a href="<?= h(url('admin/customers/txn_receipt_in.php?id='.$id)) ?>" class="btn btn-light">Back to all receipts</a>
+                  <a href="<?= h(receipt_self_url($selfReceiptBase, (int)$id, null, $selfExtraQuery)) ?>" class="btn btn-light">Back to all receipts</a>
                   <button type="submit" class="btn btn-primary">Save signatures</button>
                 </div>
               </form>
             </div>
           <?php else: ?>
             <div class="no-print" style="margin-top:12px;display:flex;justify-content:space-between;">
-              <a href="<?= h(url('admin/customers/txn_receipt_in.php?id='.$id)) ?>" class="btn btn-light">Back to all receipts</a>
+              <a href="<?= h(receipt_self_url($selfReceiptBase, (int)$id, null, $selfExtraQuery)) ?>" class="btn btn-light">Back to all receipts</a>
             </div>
           <?php endif; ?>
 
@@ -1016,4 +1075,4 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 <?php endif; ?>
 
-<?php include __DIR__ . '/../include/footer.php'; ?>
+<?php if (!$allowFromPortal) include __DIR__ . '/../include/footer.php'; ?>

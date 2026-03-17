@@ -21,10 +21,27 @@ if (!function_exists('h')) {
     }
 }
 
-$cid = (int)($u['customer_id'] ?? 0);
-if ($cid <= 0) {
+$baseCid = (int)($u['customer_id'] ?? 0);
+if ($baseCid <= 0) {
     http_response_code(400);
     exit('Missing customer_id');
+}
+
+// 当前登录的 customer（用来判断是否为 Company1）
+$st = $pdo->prepare("SELECT id, category_id FROM customers WHERE id = :id");
+$st->execute([':id' => $baseCid]);
+$currentCustomer = $st->fetch();
+if (!$currentCustomer) {
+    http_response_code(404);
+    exit('Customer not found');
+}
+
+// 如果是 Company1（category_id = 1），允许通过 ?customer_id=xx 管理其他 customer 的 login users
+$cidParam = (int)($_GET['customer_id'] ?? $_POST['customer_id'] ?? 0);
+if ((int)($currentCustomer['category_id'] ?? 0) === 1 && $cidParam > 0) {
+    $cid = $cidParam;
+} else {
+    $cid = $baseCid;
 }
 
 $user_id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
@@ -33,7 +50,7 @@ if ($user_id <= 0) {
     exit('Missing user id');
 }
 
-// 载入 customer
+// 载入被管理的 customer
 $st = $pdo->prepare("SELECT id, name, code FROM customers WHERE id = :id");
 $st->execute([':id' => $cid]);
 $customer = $st->fetch();
@@ -225,6 +242,7 @@ include __DIR__ . '/../include/header.php';
 
     <form method="post" class="form-layout">
       <input type="hidden" name="id" value="<?= (int)$user['id'] ?>">
+      <input type="hidden" name="customer_id" value="<?= (int)$cid ?>">
 
       <div class="form-section">
         <div class="form-section-header">

@@ -389,7 +389,7 @@ include __DIR__ . '/../include/header.php';
           $rowCurrency = $r['currency'] ?: $currency;
           $displayDate = $r['txn_date'] ?? substr((string)($r['created_at'] ?? ''), 0, 10);
 
-          // ✅ 全部 action 都去 txn_view
+          // ✅ 全部 action 统一进 txn_view（避免 OUT 单误跳到 IN 专用的 receipt 页面）
           $targetUrl = url('user/txn/txn_view.php?id=' . $tid);
         ?>
 

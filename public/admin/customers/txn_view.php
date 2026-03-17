@@ -3,8 +3,15 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../../../config/bootstrap.php';
-require_admin();
-require_perm('TXN.V');   // ★ 需要有 TXN.V 才能看交易收据
+
+// 允许从 customer portal 复用本页面打印收据：
+// 若定义 ALLOW_TXN_VIEW_FROM_PORTAL=true，则跳过 require_admin，由外层负责权限 & header/footer。
+$allowFromPortal = defined('ALLOW_TXN_VIEW_FROM_PORTAL') && ALLOW_TXN_VIEW_FROM_PORTAL === true;
+
+if (!$allowFromPortal) {
+    require_admin();
+    require_perm('TXN.V');   // ★ 需要有 TXN.V 才能看交易收据
+}
 
 // ★ 自动处理两边签名 & 自动 CONFIRMED 的 helper
 require_once __DIR__ . '/../../../app/txn_sign_status.php';
@@ -315,6 +322,9 @@ $isInNonInvoice = ($isIn && !$isInInvoice);
 /* ✅ multi receipt mode: IN non-invoice and no payment_id => show all payment receipts */
 $multiReceiptMode = ($isInNonInvoice && $payment_id <= 0);
 
+// 默认不显示签名表单，后面根据条件再决定（避免未定义变量警告）
+$showForm = false;
+
 try { if ($isOut) sync_pob_in_from_out($pdo, $txn, $customer); } catch (Throwable $e) {}
 
 /* ===== attachments (txn_files) ===== */
@@ -569,7 +579,9 @@ $vmChopUrl = url('admin/assets/img/vmchop.png');
 
 $page_title = t('admin.customer_txn.view.page_title', [], 'Receipt / Confirmation');
 
-include __DIR__ . '/../include/header.php';
+if (!$allowFromPortal) {
+    include __DIR__ . '/../include/header.php';
+}
 ?>
 
 <style>
@@ -906,7 +918,11 @@ include __DIR__ . '/../include/header.php';
           <?php endif; ?>
         </div>
 
-        <?php $showForm = ($needSignature && !$bothSignedThisSide && !$multiReceiptMode); ?>
+        <?php
+          // portal 复用时只读，不在这里签名（客户在自己的专用签名页签）
+          $portalReadonly = defined('TXN_VIEW_PORTAL_READONLY') && TXN_VIEW_PORTAL_READONLY === true;
+          $showForm = (!$allowFromPortal && $needSignature && !$bothSignedThisSide && !$multiReceiptMode);
+        ?>
         <?php if ($showForm): ?>
           <div class="form-section">
             <div class="form-section-header">
@@ -974,7 +990,7 @@ include __DIR__ . '/../include/header.php';
   </div>
 </div>
 
-<?php if ($needSignature && !$multiReceiptMode && !$bothSignedThisSide): ?>
+<?php if ($showForm): ?>
   <script src="<?= h(url('assets/js/sign_pad.js')) ?>"></script>
   <script>
     document.addEventListener("DOMContentLoaded", function() {

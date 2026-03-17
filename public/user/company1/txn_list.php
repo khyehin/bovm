@@ -259,6 +259,8 @@ include __DIR__ . '/../include/header.php';
           <a href="<?= h(url('user/company1/customers.php')) ?>" class="btn btn-light">← Back to customers</a>
           <a href="<?= h(url('user/company1/invoices.php?customer_id=' . $cid)) ?>" class="btn btn-light">Invoices / Quotations</a>
           <a href="<?= h(url('user/company1/quotation_edit.php?customer_id=' . $cid)) ?>" class="btn btn-primary">+ New Quotation</a>
+          <a href="<?= h(url('user/company1/customer_edit.php?id=' . $cid)) ?>" class="btn btn-light">Edit customer</a>
+          <a href="<?= h(url('user/users/users.php?customer_id=' . $cid)) ?>" class="btn btn-light">Login users</a>
         </div>
       </div>
     </div>
@@ -474,7 +476,9 @@ include __DIR__ . '/../include/header.php';
                 $backHere        = url('user/company1/txn_list.php?customer_id=' . $cid);
                 $viewInvoiceHref = url('user/company1/txn_doc_in.php?id=' . $txnIdRow . '&customer_id=' . $cid . '&doc=INVOICE');
                 $viewDoHref      = url('user/company1/txn_doc_in.php?id=' . $txnIdRow . '&customer_id=' . $cid . '&doc=DO');
-                $viewReceiptHref = url('user/txn/txn_invoice_in.php?id=' . $txnIdRow . '&back=' . rawurlencode($backHere));
+                // Company1 必须走 company1 receipt 入口（否则 user portal 会 Transaction not found）
+                // 不带 payment_id 时，收据页会显示 all receipts 列表
+                $viewReceiptHref = url('user/company1/txn_receipt_in.php?id=' . $txnIdRow . '&customer_id=' . (int)$cid . '&back=' . rawurlencode($backHere));
               ?>
               <tr>
                 <td><?= h($date) ?></td>

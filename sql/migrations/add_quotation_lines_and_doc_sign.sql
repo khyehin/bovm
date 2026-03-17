@@ -25,3 +25,11 @@ ALTER TABLE `customer_txn` ADD COLUMN `do_number` varchar(100) DEFAULT NULL;
 ALTER TABLE `customer_txn` ADD COLUMN `require_sign_quotation` tinyint(1) NOT NULL DEFAULT 0;
 ALTER TABLE `customer_txn` ADD COLUMN `require_sign_invoice` tinyint(1) NOT NULL DEFAULT 0;
 ALTER TABLE `customer_txn` ADD COLUMN `require_sign_do` tinyint(1) NOT NULL DEFAULT 0;
+
+-- Optional per-document signature images (run only if columns do not exist)
+ALTER TABLE `customer_txn` ADD COLUMN `quotation_customer_signature_image` longtext NULL;
+ALTER TABLE `customer_txn` ADD COLUMN `quotation_company_signature_image` longtext NULL;
+ALTER TABLE `customer_txn` ADD COLUMN `invoice_customer_signature_image` longtext NULL;
+ALTER TABLE `customer_txn` ADD COLUMN `invoice_company_signature_image` longtext NULL;
+ALTER TABLE `customer_txn` ADD COLUMN `do_customer_signature_image` longtext NULL;
+ALTER TABLE `customer_txn` ADD COLUMN `do_company_signature_image` longtext NULL;

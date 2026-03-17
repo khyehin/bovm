@@ -313,6 +313,8 @@ $chopUrl = url('admin/assets/img/vmchop.png');
 $company = function_exists('get_company') ? get_company() : ['name' => 'VISION MIX SDN BHD', 'reg_no' => '1622729-U', 'address' => ['LOT 3A-02A, 4TH FLOOR ENDAH PARADE,', 'NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,', '57000 KUALA LUMPUR'], 'phone' => '', 'email' => ''];
 $companyName = (string)($company['name'] ?? '');
 $companyRegNo = (string)($company['reg_no'] ?? '');
+$companyTaxNo = (string)($company['tax_no'] ?? '');
+$companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $companyTaxNo) : '') . ($companyRegNo !== '' ? (' (' . $companyRegNo . ')') : ''));
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
@@ -510,6 +512,17 @@ include __DIR__ . '/../include/header.php';
 .receipt-chop { position:absolute; right:4px; bottom:3px; max-height:55px; opacity:0.95; }
 
 .sig-canvas { width:100%; max-width:100%; height:180px; border-radius:10px; background:#f9fafb; border:1px dashed #d1d5db; touch-action:none; }
+
+@media print {
+  /* 顾客打印收据时，不打印签名输入区，只打印签名图片和下方文字 */
+  .sig-canvas,
+  .no-print {
+    display:none !important;
+  }
+  .receipt-sig-box {
+    border:0 !important;
+  }
+}
 </style>
 
 <div class="admin-main">
@@ -624,7 +637,7 @@ include __DIR__ . '/../include/header.php';
                 <tr>
                   <td class="receipt-logo" width="25%"><img src="<?= h($logoUrl) ?>" alt="Logo"></td>
                   <td class="receipt-company-block" width="45%">
-                    <div class="receipt-company-name"><?= h($companyName) ?><?= $companyRegNo !== '' ? ' (' . h($companyRegNo) . ')' : '' ?></div>
+                    <div class="receipt-company-name"><?= h($companyHeaderLine) ?></div>
                     <?php foreach ($companyAddress as $line): if (trim($line) === '') continue; ?>
                     <div><?= h($line) ?></div>
                     <?php endforeach; ?>
@@ -689,13 +702,16 @@ include __DIR__ . '/../include/header.php';
                     <?php if ($signPayer): ?>
                     <td class="receipt-sign-cell">
                       <div class="receipt-sign-block">
-                        <div style="margin-bottom:4px;">DATE:</div>
-                        <div style="border-bottom:1px solid #000;min-height:20px;margin-bottom:12px;"></div>
-                        <div style="font-weight:bold;margin-bottom:4px;">RECEIVED BY AND COMPANY STAMP:</div>
                         <div class="receipt-sig-box">
                           <?php if ($cusSig !== ''): ?>
                             <img src="<?= h($cusSig) ?>" class="receipt-sig-main" alt="Customer Signature">
                           <?php endif; ?>
+                        </div>
+                        <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
+                          RECEIVED BY AND COMPANY STAMP
+                        </div>
+                        <div style="margin-top:4px;font-size:9px;">
+                          Date: <?= h($meta['receiptDate']) ?>
                         </div>
                       </div>
                     </td>
@@ -713,6 +729,9 @@ include __DIR__ . '/../include/header.php';
                         </div>
                         <div class="receipt-sign-line" style="margin-top:4px;border-top:1px solid #000;padding-top:2px;">
                           <?= $signReceive ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
+                        </div>
+                        <div style="margin-top:4px;font-size:9px;">
+                          Date: <?= h($meta['receiptDate']) ?>
                         </div>
                       </div>
                     </td>

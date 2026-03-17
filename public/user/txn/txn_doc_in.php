@@ -45,6 +45,10 @@ if ($cid <= 0 || (int)$row['customer_id'] !== $cid) {
 if (!defined('ALLOW_TXN_DOC_FROM_PORTAL')) {
   define('ALLOW_TXN_DOC_FROM_PORTAL', true);
 }
+// 顾客端文档：允许在 Customer 一边签名（公司一边只读）
+if (!defined('TXN_DOC_PORTAL_CUSTOMER_ONLY')) {
+  define('TXN_DOC_PORTAL_CUSTOMER_ONLY', true);
+}
 
 // 当前 doc 类型（INVOICE / QUOTATION / DO）
 $doc = strtoupper(trim((string)($_GET['doc'] ?? 'INVOICE')));
@@ -88,7 +92,7 @@ include __DIR__ . '/../include/header.php';
       <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <a href="<?= h($backUrl) ?>" class="btn btn-light btn-sm">← Back</a>
-          <button type="button" class="btn btn-light btn-sm" onclick="window.print();">Print / PDF</button>
+          <button type="button" class="btn btn-light btn-sm" onclick="(window.vmPrepareAndPrint ? window.vmPrepareAndPrint() : window.print());">Print / PDF</button>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <a href="<?= h(url('user/txn/txn_doc_in.php?id='.$id.'&customer_id='.$cid.'&doc=QUOTATION&back='.rawurlencode($backUrl))) ?>"

@@ -46,15 +46,24 @@ $doc = strtoupper(trim((string)($_GET['doc'] ?? 'INVOICE')));
 if (!in_array($doc, ['INVOICE', 'QUOTATION', 'DO'], true)) {
   $doc = 'INVOICE';
 }
+
+// 如果还是报价（doc_flow_type=QUOTATION 或没 invoice_no）-> 只能看 QUOTATION（隐藏 Invoice / DO 按钮）
+$st2 = $pdo->prepare("SELECT doc_flow_type, invoice_no, doc_flow_status FROM customer_txn WHERE id = :id AND customer_id = :cid LIMIT 1");
+$st2->execute([':id' => $id, ':cid' => $cid]);
+$row2 = $st2->fetch(PDO::FETCH_ASSOC) ?: [];
+$flowType = strtoupper(trim((string)($row2['doc_flow_type'] ?? 'NORMAL')));
+$flowStat = strtoupper(trim((string)($row2['doc_flow_status'] ?? '')));
+$hasInvoiceNo = trim((string)($row2['invoice_no'] ?? '')) !== '';
+if ($flowStat === 'REJECTED' || $flowType === 'QUOTATION' || !$hasInvoiceNo) {
+  $doc = 'QUOTATION';
+  $_GET['doc'] = 'QUOTATION';
+}
 $_GET['id'] = $id;
 $_GET['customer_id'] = $cid;
 $_GET['doc'] = $doc;
 
-// Back：优先用 URL 里的 back，没有就退回 invoices 列表
-if ($back === '' && !empty($_SERVER['HTTP_REFERER'])) {
-  $back = (string)$_SERVER['HTTP_REFERER'];
-}
-$_TXN_DOC_BACK_URL_FROM_PORTAL = $back !== '' ? $back : url('user/company1/invoices.php?customer_id=' . $cid);
+// Back：优先用 URL 里的 back；如果没有，就固定回该公司的交易列表
+$_TXN_DOC_BACK_URL_FROM_PORTAL = $back !== '' ? $back : url('user/company1/txn_list.php?customer_id=' . $cid);
 
 $page_title = 'Document · #' . $id;
 $active_nav = 'company1_invoices';

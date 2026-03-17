@@ -1051,24 +1051,29 @@ include __DIR__ . '/../include/header.php';
                 </td>
 
                 <td class="table-actions-cell">
+                  <?php
+                    $tTypeRow = strtoupper(trim((string)($r['txn_type'] ?? '')));
+                    $ikRow    = detect_in_kind($r); // INVOICE / BONUS / RETURN
+                    $isInInvoice = ($tTypeRow === 'IN' && $ikRow === 'INVOICE');
+                  ?>
                   <div class="actions-menu">
                     <button type="button" class="actions-menu-trigger" aria-expanded="false">⋯</button>
 
                     <div class="actions-menu-dropdown">
-                      <a href="<?= h(url('admin/customers/txn_view.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
+                      <!-- View: 直接进 QUOTATION 版单据（admin txn_doc_in，会根据 flow 决定能否看 INVOICE/DO） -->
+                      <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid . '&doc=QUOTATION')) ?>" class="actions-menu-item">
                         <?= h(tt('admin.customer_txn.list.action_view', 'View')) ?>
                       </a>
 
+                      <!-- 普通 Edit：非 IN-INVOICE 才需要；IN-INVOICE 用下面专用的 Edit IN -->
+                      <?php if (!$isInInvoice): ?>
                       <a href="<?= h(url('admin/customers/txn_edit.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
                         <?= h(tt('admin.common.edit', 'Edit')) ?>
                       </a>
+                      <?php endif; ?>
 
                       <!-- ✅ 只要是 IN invoice 都给 IN Receipt / Invoice 编辑入口 -->
-                      <?php
-                      $tType = strtoupper(trim((string)($r['txn_type'] ?? '')));
-                      $ik    = detect_in_kind($r); // INVOICE / BONUS / RETURN
-                      ?>
-                      <?php if ($tType === 'IN' && $ik === 'INVOICE'): ?>
+                      <?php if ($isInInvoice): ?>
                         <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
                           <?= h(tt('admin.customer_txn.list.action_invoice_edit', 'View / edit IN invoice')) ?>
                         </a>

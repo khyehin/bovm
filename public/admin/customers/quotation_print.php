@@ -15,6 +15,16 @@ if (!function_exists('h')) {
   }
 }
 
+function parse_unit_marker(string $desc): array {
+  $desc = (string)$desc;
+  if (preg_match('/^\[\[UNIT:(.*?)\]\]\s*(\r\n|\r|\n)?/u', $desc, $m)) {
+    $unitLabel = trim((string)($m[1] ?? ''));
+    $rest = substr($desc, strlen((string)$m[0]));
+    return [$unitLabel, $rest];
+  }
+  return ['', $desc];
+}
+
 function table_columns(PDO $pdo, string $table): array {
   static $cache = [];
   $k = strtolower($table);
@@ -87,14 +97,29 @@ $chopUrl = url('admin/assets/img/vmchop.png');
 $company = function_exists('get_company') ? get_company() : ['name' => 'VISION MIX SDN BHD', 'reg_no' => '1622729-U', 'address' => ['LOT 3A-02A, 4TH FLOOR ENDAH PARADE,', 'NO.1 JALAN 1/149E, BANDAR BARU SRI PETALING,', '57000 KUALA LUMPUR'], 'phone' => '', 'email' => ''];
 $companyName = (string)($company['name'] ?? '');
 $companyRegNo = (string)($company['reg_no'] ?? '');
+$companyTaxNo = (string)($company['tax_no'] ?? '');
+$companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $companyTaxNo) : '') . ($companyRegNo !== '' ? (' (' . $companyRegNo . ')') : ''));
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
-$preferredBank = null;
+$preferredBanks = [];
 try {
-  $stBank = $pdo->query("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE is_active = 1 ORDER BY id ASC LIMIT 1");
-  $preferredBank = $stBank->fetch(PDO::FETCH_ASSOC) ?: null;
-} catch (Throwable $e) {}
+  $stBank = $pdo->query("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE is_active = 1 ORDER BY id ASC");
+  $allBanks = $stBank->fetchAll(PDO::FETCH_ASSOC) ?: [];
+  $pick = [];
+  foreach ($allBanks as $b) {
+    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
+    if ($code === 'CIMB') $pick[] = $b;
+  }
+  foreach ($allBanks as $b) {
+    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
+    if ($code === 'HONG LEONG BANK') $pick[] = $b;
+  }
+  if (!$pick) $pick = $allBanks;
+  $preferredBanks = array_slice($pick, 0, 2);
+} catch (Throwable $e) {
+  $preferredBanks = [];
+}
 
 $page_title = 'Quotation · ' . $customerName;
 include __DIR__ . '/../include/header.php';
@@ -102,7 +127,12 @@ include __DIR__ . '/../include/header.php';
 <style>
 .quotation-print-wrap { max-width:800px; margin:0 auto; padding:20px; }
 .quotation-print-wrap table { width:100%; border-collapse:collapse; }
-.quotation-print-wrap th, .quotation-print-wrap td { border:1px solid #333; padding:8px; text-align:left; }
+.quotation-print-wrap th, .quotation-print-wrap td { border:0; padding:8px; text-align:left; }
+.quotation-print-wrap table.table { border:1px solid #333; }
+.quotation-print-wrap table.table thead th { border-bottom:1px solid #333; }
+.quotation-print-wrap table.table td, .quotation-print-wrap table.table th { border-right:1px solid #333; }
+.quotation-print-wrap table.table td:last-child, .quotation-print-wrap table.table th:last-child { border-right:0; }
+.quotation-print-wrap table.table tbody td { border-top:0; } /* 去掉行内横线 */
 .quotation-print-wrap th { background:#eee; }
 .quotation-print-wrap .col-no { width:50px; }
 .quotation-print-wrap .col-desc { min-width:200px; }
@@ -110,6 +140,8 @@ include __DIR__ . '/../include/header.php';
 .quotation-print-wrap .col-unit { width:110px; }
 .quotation-print-wrap .col-amount { width:120px; text-align:right; }
 .quotation-print-wrap .text-right { text-align:right; }
+.quotation-print-wrap th.col-qty, .quotation-print-wrap td.col-qty { text-align:center; }
+.quotation-print-wrap th.col-unit, .quotation-print-wrap td.col-unit { text-align:center; }
 .doc-title-print { font-size:20px; font-weight:700; margin-bottom:12px; }
 .no-print { margin-bottom:16px; }
 .print-sign-row { width:100%; margin-top:24px; border-collapse:collapse; }
@@ -131,7 +163,7 @@ include __DIR__ . '/../include/header.php';
     <tr>
       <td style="width:25%; vertical-align:top;"><img src="<?= h($logoUrl) ?>" alt="Logo" style="max-height:55px;"></td>
       <td style="width:45%; font-size:12px; line-height:1.4;">
-        <div style="font-size:14px; font-weight:bold;"><?= h($companyName) ?><?= $companyRegNo !== '' ? ' (' . h($companyRegNo) . ')' : '' ?></div>
+        <div style="font-size:14px; font-weight:bold;"><?= h($companyHeaderLine) ?></div>
         <?php foreach ($companyAddress as $line): if (trim($line) === '') continue; ?>
         <div><?= h($line) ?></div>
         <?php endforeach; ?>
@@ -192,16 +224,25 @@ include __DIR__ . '/../include/header.php';
         foreach ($lines as $i => $line) {
           $no = $i + 1;
           $desc = (string)($line['description'] ?? '');
+          [$unitLabel, $descShown] = parse_unit_marker($desc);
           $qty = (float)($line['quantity'] ?? 1);
           $unit = (float)($line['unit_price'] ?? 0);
           $amt = (float)($line['amount'] ?? 0);
       ?>
       <tr>
         <td><?= (int)$no ?></td>
-        <td><?= h($desc) ?></td>
-        <td><?= h($qty) ?></td>
-        <td class="text-right"><?= number_format($unit, 2) ?></td>
-        <td class="text-right"><?= number_format($amt, 2) ?></td>
+        <td style="white-space:pre-wrap;"><?= h($descShown) ?></td>
+        <td class="col-qty"><?= h($qty) ?></td>
+        <td class="col-unit">
+          <?php if ($unitLabel !== '' && abs($unit) < 0.0001): ?>
+            <?= h($unitLabel) ?>
+          <?php elseif (abs($unit) < 0.0001): ?>
+            &nbsp;
+          <?php else: ?>
+            <?= number_format($unit, 2) ?>
+          <?php endif; ?>
+        </td>
+        <td class="text-right"><?= abs($amt) < 0.0001 ? '&nbsp;' : number_format($amt, 2) ?></td>
       </tr>
       <?php
         }
@@ -247,13 +288,20 @@ include __DIR__ . '/../include/header.php';
     <p style="margin:0 0 12px;">All overdue accounts will be subject to an additional charge of 1.5% per month. Payment to be made to VISION MIX SDN. BHD.</p>
   </div>
 
-  <?php if ($preferredBank): ?>
+  <?php if ($preferredBanks): ?>
   <div style="margin-top:12px;">
     <strong>PREFERRED BANK</strong>
+    <?php foreach ($preferredBanks as $b): ?>
+      <div style="margin-top:4px;">
+        <span class="label">BANK:</span> <?= h($b['bank_code'] ?? '') ?> &nbsp;|&nbsp;
+        <span class="label">ACCOUNT NAME:</span> <?= h($b['account_name'] ?? '') ?> &nbsp;|&nbsp;
+        <span class="label">ACCOUNT NO.:</span> <?= h($b['account_no'] ?? '') ?>
+      </div>
+    <?php endforeach; ?>
     <div style="margin-top:4px;">
-      <span class="label">BANK:</span> <?= h($preferredBank['bank_code'] ?? '') ?> &nbsp;|&nbsp;
-      <span class="label">ACCOUNT NAME:</span> <?= h($preferredBank['account_name'] ?? '') ?> &nbsp;|&nbsp;
-      <span class="label">ACCOUNT NO.:</span> <?= h($preferredBank['account_no'] ?? '') ?>
+      <span class="label">BANK:</span> HONG LEONG BANK &nbsp;|&nbsp;
+      <span class="label">ACCOUNT NAME:</span> VISION MIX SDN BHD &nbsp;|&nbsp;
+      <span class="label">ACCOUNT NO.:</span> 19400128208
     </div>
   </div>
   <?php endif; ?>

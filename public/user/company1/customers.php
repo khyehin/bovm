@@ -150,6 +150,7 @@ include __DIR__ . '/../include/header.php';
                         <a class="actions-menu-item" href="<?= h(url('user/company1/txn_list.php?customer_id=' . $cidRow)) ?>">Transactions</a>
                         <a class="actions-menu-item" href="<?= h(url('user/company1/invoices.php?customer_id=' . $cidRow)) ?>">Invoices</a>
                         <a class="actions-menu-item" href="<?= h(url('user/company1/customer_edit.php?id=' . $cidRow)) ?>">Edit details</a>
+                        <a class="actions-menu-item" href="<?= h(url('user/users/users.php?customer_id=' . $cidRow)) ?>">Add login user</a>
                       </div>
                     </div>
                   </td>

@@ -21,7 +21,8 @@ if (!function_exists('h')) {
     }
 }
 
-$cid = (int)($u['customer_id'] ?? 0);
+// Company1 可以带 customer_id 参数来为别的公司创建 login user
+$cid = (int)($_GET['customer_id'] ?? ($u['customer_id'] ?? 0));
 if ($cid <= 0) {
     http_response_code(400);
     exit('Missing customer_id');
@@ -103,7 +104,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             );
         }
 
-        header('Location: ' . url('user/users/users.php?ok=1'));
+        header('Location: ' . url('user/users/users.php?customer_id=' . $cid . '&ok=1'));
         exit;
     }
 }
@@ -179,7 +180,7 @@ include __DIR__ . '/../include/header.php';
           <td><?= $usr['is_active'] ? h(t('common.yes')) : h(t('common.no')) ?></td>
           <td>
             <a class="btn btn-light btn-sm"
-               href="<?= h(url('user/users/user_edit.php?id='.(int)$usr['id'])) ?>">
+               href="<?= h(url('user/users/user_edit.php?id='.(int)$usr['id'].'&customer_id='.(int)$cid)) ?>">
               <?= h(t('users.list.btn_edit')) ?>
             </a>
           </td>

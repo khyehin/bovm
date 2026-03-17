@@ -644,7 +644,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $order_total    = (float)($_POST['order_total'] ?? ($txn['order_total'] ?? 0));
     $title          = trim((string)($_POST['title'] ?? ($txn['title'] ?? '')));
     $notes          = trim((string)($_POST['notes'] ?? ($txn['notes'] ?? '')));
-    $sign_receive   = isset($_POST['sign_receive']) ? 1 : 0;
+    // 注意：此页面没有单独的 sign_receive checkbox。
+    // 我们这边默认需要签名/盖章（sign_receive=1），只有 CHOP_ONLY 才视为不需要我们签名。
+    $sign_receive   = 1;
     $sign_payer     = isset($_POST['sign_payer'])   ? 1 : 0;
     $recipient_name = trim((string)($_POST['recipient_name'] ?? ($txn['recipient_name'] ?? '')));
     $recipient_nric = trim((string)($_POST['recipient_nric'] ?? ($txn['recipient_nric'] ?? '')));
@@ -657,9 +659,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     // when CHOP_ONLY, we don't require our signature (only company chop)
-    if ($sign_mode === 'CHOP_ONLY') {
-        $sign_receive = 0;
-    }
+    if ($sign_mode === 'CHOP_ONLY') $sign_receive = 0;
 
     $postInKind = strtoupper(trim((string)($_POST['in_kind'] ?? ($txn['in_kind'] ?? 'INVOICE'))));
     if (!in_array($postInKind, $validInKinds, true)) $postInKind = 'INVOICE';
@@ -1368,7 +1368,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             $pdo->commit();
 
-            header('Location: ' . url('admin/customers/txn_edit_in.php?customer_id=' . $customer_id . '&id=' . $txnId . '&ok=1'));
+            // 保存成功后，根据入口返回不同页面：
+            // - admin 入口：回 admin/customers/txn_edit_in.php
+            // - Company1 入口：回 user/company1/txn_edit_in.php
+            if ($allowFromCompany1) {
+                header('Location: ' . url('user/company1/txn_edit_in.php?customer_id=' . $customer_id . '&id=' . $txnId . '&ok=1'));
+            } else {
+                header('Location: ' . url('admin/customers/txn_edit_in.php?customer_id=' . $customer_id . '&id=' . $txnId . '&ok=1'));
+            }
             exit;
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
@@ -1619,7 +1626,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                     // Back：优先用调用方传入的 back（例如 user 端），否则退回默认列表
                     $backPath = '';
                     if (!empty($GLOBALS['_TXN_IN_BACK_URL_FROM_PORTAL'] ?? '')) {
-                        $backPath = (string)$GLOBALS['_TXN_IN_BACK_URL_FROM_PORTAL'];
+                        $backPath = (string)$GLOBALS['_TXN_IN_BACK_URL_FROM_PORTAL']; // 这里通常已经是完整 URL
                     } else {
                         $backPath = $allowFromCompany1
                             ? 'user/company1/txn_list.php?customer_id=' . (int)$customer_id
@@ -1632,7 +1639,13 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                     <div style="margin-bottom:8px;font-size:12px;color:#6b7280;">
                         Flow: <strong><?= h($flowLabelNow) ?></strong>
                     </div>
-                    <a href="<?= h(url($backPath)) ?>" class="btn btn-light">
+                    <?php
+                    // 如果 backPath 已经是绝对 URL，就直接用；否则通过 url() 生成
+                    $backHref = (preg_match('~^https?://~i', $backPath) || str_starts_with($backPath, '/'))
+                        ? $backPath
+                        : url($backPath);
+                    ?>
+                    <a href="<?= h($backHref) ?>" class="btn btn-light">
                         <?= h(tt('admin.txn_in.back', '← Back to transactions')) ?>
                     </a>
                     <?php if (!empty($txn['id'])): ?>
@@ -1891,9 +1904,15 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                                             <td>
                                                 <?php if (!empty($pl['id'] ?? null) && !empty($txn['id'])): ?>
                                                     <?php if (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE'): ?>
-                                                        <a href="<?= h(url('admin/customers/txn_receipt_in.php?id=' . (int)$txn['id'] . '&payment_id=' . (int)$pl['id'])) ?>"
-                                                            class="btn btn-xs btn-light">
-                                                            <?= h(tt('admin.txn_in.view_invoice', 'View invoice')) ?>
+                                                        <?php
+                                                          $backUrl = $_SERVER['REQUEST_URI'] ?? '';
+                                                          $receiptUrl = url('admin/customers/txn_receipt_in.php?id=' . (int)$txn['id'] . '&payment_id=' . (int)$pl['id']);
+                                                          if (defined('ALLOW_TXN_IN_FROM_COMPANY1') && ALLOW_TXN_IN_FROM_COMPANY1 === true) {
+                                                            $receiptUrl = url('user/company1/txn_receipt_in.php?id=' . (int)$txn['id'] . '&customer_id=' . (int)$customer_id . '&payment_id=' . (int)$pl['id'] . '&back=' . rawurlencode($backUrl));
+                                                          }
+                                                        ?>
+                                                        <a href="<?= h($receiptUrl) ?>" class="btn btn-xs btn-light">
+                                                          <?= h(tt('admin.txn_in.view_receipt', 'View receipt')) ?>
                                                         </a>
                                                     <?php else: ?>
                                                         <?php $backUrl = $_SERVER['REQUEST_URI'] ?? ''; ?>
@@ -2147,7 +2166,13 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                 <!-- Footer -->
                 <div class="form-footer-row" style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;gap:8px;">
                     <div>
-                        <a href="<?= h(url('admin/customers/txn_list.php?customer_id=' . $customer_id)) ?>" class="btn btn-light">
+                        <?php
+                          $cancelUrl = url('admin/customers/txn_list.php?customer_id=' . $customer_id);
+                          if (defined('ALLOW_TXN_IN_FROM_COMPANY1') && ALLOW_TXN_IN_FROM_COMPANY1 === true) {
+                            $cancelUrl = url('user/company1/txn_list.php?customer_id=' . $customer_id);
+                          }
+                        ?>
+                        <a href="<?= h($cancelUrl) ?>" class="btn btn-light">
                             <?= h(tt('admin.txn_in.btn.cancel', 'Cancel')) ?>
                         </a>
                     </div>

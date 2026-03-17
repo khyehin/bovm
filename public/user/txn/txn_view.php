@@ -100,6 +100,8 @@ $requireSignature = (int)($txn['require_signature'] ?? 0) === 1;
 // ✅ 只有 admin normal IN (INVOICE) 才是 invoice
 $isInvoiceIn       = ($adminType === 'IN' && $inKind === 'INVOICE');
 $isBonusOrReturnIn = ($adminType === 'IN' && in_array($inKind, ['BONUS', 'RETURN'], true));
+// admin IN + in_kind=ALLOCATE：在客户视角是 OUT (allocate)，不需要 receipt / quotation 按钮
+$isAllocateIn      = ($adminType === 'IN' && $inKind === 'ALLOCATE');
 
 // ✅ receipt 只给：admin OUT（非 allocate）/ bonus / return（invoice 不给）
 $isAllocateOut = ($adminType === 'OUT' && $inKind === 'ALLOCATE');
@@ -273,12 +275,15 @@ include __DIR__ . '/../include/header.php';
         $docQuotationUrl = url('user/txn/txn_doc_in.php?id='.(int)$tid.'&customer_id='.$cid.'&doc=QUOTATION&back='.rawurlencode($backHere));
         $docDoUrl        = url('user/txn/txn_doc_in.php?id='.(int)$tid.'&customer_id='.$cid.'&doc=DO&back='.rawurlencode($backHere));
         $allReceiptsUrl  = url('user/txn/txn_invoice_in.php?id='.(int)$tid.'&back='.rawurlencode($backHere));
+        $outReceiptFull  = url('user/txn/txn_receipt_full.php?id='.(int)$tid.'&back='.rawurlencode($backHere));
+        $outReceiptSign  = url('user/txn/txn_receipt_out.php?id='.(int)$tid.'&back='.rawurlencode($backHere));
       ?>
 
       <a href="<?= h($backUrl) ?>" class="btn btn-light">
         <?= h(t('txn.view.btn_back', [], 'Back')) ?>
       </a>
-      <?php if ($adminType === 'IN' && !$isContra): ?>
+
+      <?php if ($adminType === 'IN' && !$isContra && !$isAllocateIn): ?>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
           <?php if ($flowStat !== 'REJECTED'): ?>
             <a href="<?= h($allReceiptsUrl) ?>" class="btn btn-primary btn-sm">
@@ -295,10 +300,20 @@ include __DIR__ . '/../include/header.php';
             </a>
           <?php endif; ?>
 
-          <!-- Quotation 总是可以看（无论是 quotation 状态或已 reject） -->
           <a href="<?= h($docQuotationUrl) ?>" class="btn btn-light btn-sm" target="_blank">
             Quotation
           </a>
+        </div>
+      <?php elseif ($adminType === 'OUT' && !$isContra && $requireSignature): ?>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
+          <a href="<?= h($outReceiptFull) ?>" class="btn btn-light btn-sm" target="_blank">
+            <?= h(t('cust.txn.receipt.btn_view', [], 'Receipt')) ?>
+          </a>
+          <?php if (!$hasCustomerSignature): ?>
+            <a href="<?= h($outReceiptSign) ?>" class="btn btn-primary btn-sm">
+              <?= h(t('cust.txn.receipt.btn_sign', [], 'Sign')) ?>
+            </a>
+          <?php endif; ?>
         </div>
       <?php endif; ?>
     </div>

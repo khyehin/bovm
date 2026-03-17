@@ -34,6 +34,17 @@ function table_columns(PDO $pdo, string $table): array {
   return $cache[$k] = $cols;
 }
 
+/** description 中的单位标记：第一行 `[[UNIT:SET]]` */
+function parse_unit_marker(string $desc): array {
+  $desc = (string)$desc;
+  if (preg_match('/^\[\[UNIT:(.*?)\]\]\s*(\r\n|\r|\n)?/u', $desc, $m)) {
+    $unitLabel = trim((string)($m[1] ?? ''));
+    $rest = substr($desc, strlen((string)$m[0]));
+    return [$unitLabel, $rest];
+  }
+  return ['', $desc];
+}
+
 $txnCols = table_columns($pdo, 'customer_txn');
 $hasLines = false;
 try {
@@ -85,6 +96,22 @@ if ($id > 0) {
   }
 }
 
+// 若 DB 没有 discount 字段：用行合计推算一个“显示用 discount”
+$virtualDiscount = 0.0;
+if (!$hasDiscount && !empty($lines)) {
+  $lineSum = 0.0;
+  foreach ($lines as $ln) {
+    $a = (float)($ln['amount'] ?? 0);
+    if (abs($a) < 0.0001) {
+      $q = (float)($ln['quantity'] ?? 0);
+      $u = (float)($ln['unit_price'] ?? 0);
+      $a = $q * $u;
+    }
+    if ($a > 0) $lineSum += $a;
+  }
+  $virtualDiscount = max(0, $lineSum - (float)($txn['order_total'] ?? 0));
+}
+
 $isQuotation = true;
 if ($txn && $hasDocFlowType) {
   $isQuotation = (strtoupper((string)($txn['doc_flow_type'] ?? '')) === 'QUOTATION');
@@ -132,6 +159,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
 
   // save
+  // 同步可编辑的 customer 显示信息（To / Add / Tel / Attn）
+  $custNamePosted = trim((string)($_POST['customer_name'] ?? ''));
+  $custAddrPosted = (string)($_POST['customer_address'] ?? '');
+  $custTelPosted  = trim((string)($_POST['customer_tel'] ?? ''));
+  $custAttnPosted = trim((string)($_POST['customer_attn'] ?? ''));
+  if ($custNamePosted !== '' || trim($custAddrPosted) !== '' || $custTelPosted !== '' || $custAttnPosted !== '') {
+    $addrLines = preg_split('/\r\n|\r|\n/', (string)$custAddrPosted);
+    $addrLines = array_values(array_filter(array_map('trim', $addrLines), static fn($x) => $x !== ''));
+    $a1 = $addrLines[0] ?? '';
+    $a2 = $addrLines[1] ?? '';
+    $a3 = $addrLines[2] ?? '';
+    $pdo->prepare("
+      UPDATE customers
+         SET name = :name,
+             address1 = :a1,
+             address2 = :a2,
+             address3 = :a3,
+             contact_phone = :tel,
+             contact_name = :attn
+       WHERE id = :cid
+       LIMIT 1
+    ")->execute([
+      ':name' => $custNamePosted !== '' ? $custNamePosted : (string)($customer['name'] ?? ''),
+      ':a1'   => $a1 !== '' ? $a1 : (string)($customer['address1'] ?? ''),
+      ':a2'   => $a2 !== '' ? $a2 : (string)($customer['address2'] ?? ''),
+      ':a3'   => $a3 !== '' ? $a3 : (string)($customer['address3'] ?? ''),
+      ':tel'  => $custTelPosted !== '' ? $custTelPosted : (string)($customer['contact_phone'] ?? ''),
+      ':attn' => $custAttnPosted !== '' ? $custAttnPosted : (string)($customer['contact_name'] ?? ''),
+      ':cid'  => $cid,
+    ]);
+    // reload for render
+    $st = $pdo->prepare("SELECT * FROM customers WHERE id = :id LIMIT 1");
+    $st->execute([':id' => $cid]);
+    $customer = $st->fetch() ?: $customer;
+  }
+
   $txn_date   = (string)($_POST['txn_date'] ?? date('Y-m-d'));
   $title      = trim((string)($_POST['title'] ?? 'Quotation'));
   if ($title === '') $title = 'Quotation';
@@ -167,7 +230,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $linePosts = $_POST['lines'] ?? [];
       $seq = 1;
       foreach ($linePosts as $row) {
-        $desc = trim((string)($row['description'] ?? ''));
+        $unitLabel = trim((string)($row['unit_label'] ?? ''));
+        $descRaw = (string)($row['description'] ?? '');
+        // strip existing marker then re-add if posted
+        [, $descNoMarker] = parse_unit_marker($descRaw);
+        $desc = trim((string)$descNoMarker);
+        if ($unitLabel !== '') {
+          $desc = '[[UNIT:' . $unitLabel . "]]\n" . $desc;
+        }
         $qty = (float)($row['quantity'] ?? 1);
         $unit = (float)($row['unit_price'] ?? 0);
         $amt = (float)($row['amount'] ?? 0);
@@ -212,7 +282,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $linePosts = $_POST['lines'] ?? [];
       $seq = 1;
       foreach ($linePosts as $row) {
-        $desc = trim((string)($row['description'] ?? ''));
+        $unitLabel = trim((string)($row['unit_label'] ?? ''));
+        $descRaw = (string)($row['description'] ?? '');
+        [, $descNoMarker] = parse_unit_marker($descRaw);
+        $desc = trim((string)$descNoMarker);
+        if ($unitLabel !== '') {
+          $desc = '[[UNIT:' . $unitLabel . "]]\n" . $desc;
+        }
         $qty = (float)($row['quantity'] ?? 1);
         $unit = (float)($row['unit_price'] ?? 0);
         $amt = (float)($row['amount'] ?? 0);
@@ -250,6 +326,7 @@ $customerAddr = array_filter([
 ]);
 $customerTel = (string)($customer['contact_phone'] ?? '');
 $customerAttn = (string)($customer['contact_name'] ?? '');
+$customerAddrText = implode("\n", array_values(array_filter($customerAddr, static fn($x) => trim((string)$x) !== '')));
 
 $page_title = $id > 0 ? ('Edit Quotation · ' . $customerName) : ('New Quotation · ' . $customerName);
 include __DIR__ . '/../include/header.php';
@@ -261,6 +338,15 @@ include __DIR__ . '/../include/header.php';
 .quotation-form th { background:#f3f4f6; font-size:12px; }
 .quotation-form .col-no { width:50px; }
 .quotation-form .col-desc { min-width:200px; }
+.quotation-form textarea.line-desc {
+  width: 100%;
+  min-height: 54px;
+  resize: vertical;
+  white-space: pre-wrap;
+}
+.quotation-form .line-unitlabel{
+  text-transform: uppercase;
+}
 .quotation-form .col-qty { width:90px; }
 .quotation-form .col-unit { width:110px; }
 .quotation-form .col-amount { width:120px; text-align:right; }
@@ -293,18 +379,18 @@ include __DIR__ . '/../include/header.php';
         <div class="form-grid form-grid-2" style="margin-bottom:16px;">
           <div>
             <div class="field-label" style="margin-bottom:4px;">To</div>
-            <div style="font-size:14px;"><?= h($customerName) ?></div>
+            <input type="text" name="customer_name" class="form-control" value="<?= h($customerName) ?>" style="max-width:420px;">
             <?php if (!empty($customerAddr)): ?>
               <div class="field-label" style="margin-bottom:4px;">Add.</div>
-              <div style="font-size:13px;color:#374151;"><?= h(implode(', ', $customerAddr)) ?></div>
+              <textarea name="customer_address" class="form-control" rows="3" style="max-width:520px;white-space:pre-wrap;"><?= h($customerAddrText) ?></textarea>
             <?php endif; ?>
             <?php if ($customerTel !== ''): ?>
               <div class="field-label" style="margin-bottom:4px;">Tel</div>
-              <div style="font-size:13px;"><?= h($customerTel) ?></div>
+              <input type="text" name="customer_tel" class="form-control" value="<?= h($customerTel) ?>" style="max-width:260px;">
             <?php endif; ?>
             <?php if ($customerAttn !== ''): ?>
               <div class="field-label" style="margin-bottom:4px;">Attn.</div>
-              <div style="font-size:13px;"><?= h($customerAttn) ?></div>
+              <input type="text" name="customer_attn" class="form-control" value="<?= h($customerAttn) ?>" style="max-width:260px;">
             <?php endif; ?>
           </div>
           <div>
@@ -349,16 +435,22 @@ include __DIR__ . '/../include/header.php';
               foreach ($lines as $i => $line) {
                 $no = $i + 1;
                 $desc = (string)($line['description'] ?? '');
+                [$unitLabel, $descShown] = parse_unit_marker($desc);
                 $qty = (float)($line['quantity'] ?? 1);
                 $unit = (float)($line['unit_price'] ?? 0);
                 $amt = (float)($line['amount'] ?? 0);
             ?>
             <tr>
               <td><?= (int)$no ?></td>
-              <td><input type="text" name="lines[<?= (int)$no ?>][description]" class="form-control" value="<?= h($desc) ?>"></td>
+              <td>
+                <textarea name="lines[<?= (int)$no ?>][description]" class="form-control line-desc" rows="3"><?= h($descShown) ?></textarea>
+              </td>
               <td><input type="number" step="0.0001" min="0" name="lines[<?= (int)$no ?>][quantity]" class="form-control line-qty" value="<?= h($qty) ?>"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[<?= (int)$no ?>][unit_price]" class="form-control line-unit" value="<?= h($unit) ?>"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[<?= (int)$no ?>][amount]" class="form-control line-amount text-right" value="<?= h($amt) ?>"></td>
+              <td>
+                <input type="text" name="lines[<?= (int)$no ?>][unit_label]" class="form-control line-unitlabel" value="<?= h($unitLabel) ?>" placeholder="SET / PAX" style="margin-bottom:6px;">
+                <input type="number" step="0.01" min="0" name="lines[<?= (int)$no ?>][unit_price]" class="form-control line-unit" value="<?= $unit > 0 ? h($unit) : '' ?>" placeholder="0.00">
+              </td>
+              <td><input type="number" step="0.01" min="0" name="lines[<?= (int)$no ?>][amount]" class="form-control line-amount text-right" value="<?= $amt > 0 ? h($amt) : '' ?>" placeholder=""></td>
             </tr>
             <?php
               }
@@ -367,10 +459,13 @@ include __DIR__ . '/../include/header.php';
             ?>
             <tr>
               <td>1</td>
-              <td><input type="text" name="lines[1][description]" class="form-control" placeholder="Item description" value=""></td>
+              <td><textarea name="lines[1][description]" class="form-control line-desc" rows="3" placeholder="Item description"></textarea></td>
               <td><input type="number" step="0.0001" min="0" name="lines[1][quantity]" class="form-control line-qty" value="1"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[1][unit_price]" class="form-control line-unit" value="0"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[1][amount]" class="form-control line-amount text-right" value="0"></td>
+              <td>
+                <input type="text" name="lines[1][unit_label]" class="form-control line-unitlabel" value="" placeholder="SET / PAX" style="margin-bottom:6px;">
+                <input type="number" step="0.01" min="0" name="lines[1][unit_price]" class="form-control line-unit" value="" placeholder="0.00">
+              </td>
+              <td><input type="number" step="0.01" min="0" name="lines[1][amount]" class="form-control line-amount text-right" value="" placeholder=""></td>
             </tr>
             <?php } else {
               // 无 customer_txn_lines 表时的回退：单行用 title + order_total
@@ -378,10 +473,13 @@ include __DIR__ . '/../include/header.php';
             ?>
             <tr>
               <td>1</td>
-              <td><input type="text" name="lines[1][description]" class="form-control" placeholder="Item description" value="<?= h($txn['title'] ?? '') ?>"></td>
+              <td><textarea name="lines[1][description]" class="form-control line-desc" rows="3" placeholder="Item description"><?= h($txn['title'] ?? '') ?></textarea></td>
               <td><input type="number" step="0.0001" min="0" name="lines[1][quantity]" class="form-control line-qty" value="1"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[1][unit_price]" class="form-control line-unit" value="<?= $savedTotal > 0 ? h($savedTotal) : '0' ?>"></td>
-              <td><input type="number" step="0.01" min="0" name="lines[1][amount]" class="form-control line-amount text-right" value="<?= h($savedTotal) ?>"></td>
+              <td>
+                <input type="text" name="lines[1][unit_label]" class="form-control line-unitlabel" value="" placeholder="SET / PAX" style="margin-bottom:6px;">
+                <input type="number" step="0.01" min="0" name="lines[1][unit_price]" class="form-control line-unit" value="<?= $savedTotal > 0 ? h($savedTotal) : '' ?>" placeholder="0.00">
+              </td>
+              <td><input type="number" step="0.01" min="0" name="lines[1][amount]" class="form-control line-amount text-right" value="<?= $savedTotal > 0 ? h($savedTotal) : '' ?>" placeholder=""></td>
             </tr>
             <?php } ?>
           </tbody>
@@ -393,7 +491,7 @@ include __DIR__ . '/../include/header.php';
         <div style="max-width:320px;margin-left:auto;margin-bottom:16px;">
           <div class="form-group">
             <label class="field-label">Discount</label>
-            <input type="number" step="0.01" min="0" name="discount" id="totalDiscount" class="form-control" value="<?= h($txn['discount'] ?? 0) ?>">
+            <input type="number" step="0.01" min="0" name="discount" id="totalDiscount" class="form-control" value="<?= h($hasDiscount ? ($txn['discount'] ?? 0) : $virtualDiscount) ?>">
           </div>
           <div style="font-size:14px;font-weight:600;">Total Amount: <span id="grandTotal"><?= number_format((float)($txn['order_total'] ?? 0), 2, '.', '') ?></span></div>
           <input type="hidden" name="order_total" id="orderTotal" value="<?= h($txn['order_total'] ?? 0) ?>">
@@ -486,8 +584,13 @@ include __DIR__ . '/../include/header.php';
     function updateAmount() {
       var q = parseFloat(qty.value) || 0;
       var u = parseFloat(unit.value) || 0;
-      amt.value = (q * u).toFixed(2);
-      recalc();
+      if (u > 0) {
+        amt.value = (q * u).toFixed(2);
+        recalc();
+      } else {
+        // unit price 为空时不自动覆盖 amount（允许手填 total）
+        recalc();
+      }
     }
     if (qty) qty.addEventListener('input', updateAmount);
     if (unit) unit.addEventListener('input', updateAmount);
@@ -503,10 +606,13 @@ include __DIR__ . '/../include/header.php';
       var idx = lineIndex();
       var tr = document.createElement('tr');
       tr.innerHTML = '<td>' + idx + '</td>' +
-        '<td><input type="text" name="lines[' + idx + '][description]" class="form-control"></td>' +
+        '<td><textarea name="lines[' + idx + '][description]" class="form-control line-desc" rows="3"></textarea></td>' +
         '<td><input type="number" step="0.0001" min="0" name="lines[' + idx + '][quantity]" class="form-control line-qty" value="1"></td>' +
-        '<td><input type="number" step="0.01" min="0" name="lines[' + idx + '][unit_price]" class="form-control line-unit" value="0"></td>' +
-        '<td><input type="number" step="0.01" min="0" name="lines[' + idx + '][amount]" class="form-control line-amount text-right" value="0"></td>';
+        '<td>' +
+          '<input type="text" name="lines[' + idx + '][unit_label]" class="form-control line-unitlabel" placeholder="SET / PAX" style="margin-bottom:6px;">' +
+          '<input type="number" step="0.01" min="0" name="lines[' + idx + '][unit_price]" class="form-control line-unit" value="" placeholder="0.00">' +
+        '</td>' +
+        '<td><input type="number" step="0.01" min="0" name="lines[' + idx + '][amount]" class="form-control line-amount text-right" value="" placeholder=""></td>';
       lineBody.appendChild(tr);
       bindLine(tr);
     });

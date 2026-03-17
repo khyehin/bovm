@@ -75,6 +75,32 @@ $st  = $pdo->prepare($sql);
 $st->execute($params);
 $rows = $st->fetchAll();
 
+// 预先检查每个 IN 是否有 payment，用来控制是否显示 Receipt 按钮
+$hasPaymentByTxn = [];
+if ($rows) {
+  $ids = [];
+  foreach ($rows as $r) {
+    $tid = (int)($r['id'] ?? 0);
+    if ($tid > 0) $ids[$tid] = true;
+  }
+  $ids = array_keys($ids);
+  if ($ids) {
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    try {
+      $stPay = $pdo->prepare("SELECT customer_txn_id, COUNT(*) AS cnt FROM customer_txn_payments WHERE customer_txn_id IN ($in) GROUP BY customer_txn_id");
+      $stPay->execute($ids);
+      foreach ($stPay->fetchAll(PDO::FETCH_ASSOC) as $p) {
+        $tid = (int)($p['customer_txn_id'] ?? 0);
+        if ($tid > 0 && (int)($p['cnt'] ?? 0) > 0) {
+          $hasPaymentByTxn[$tid] = true;
+        }
+      }
+    } catch (Throwable $e) {
+      // ignore
+    }
+  }
+}
+
 $page_title = t('portal.invoices.title', [], 'Invoices & Quotations');
 $active_nav = 'invoices';
 
@@ -188,6 +214,9 @@ include __DIR__ . '/../include/header.php';
               $viewDoUrl        = url('user/txn/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid . '&doc=DO');
 
               $isRejectedQuotation = ($dfType === 'QUOTATION' && $dfStatUpper === 'REJECTED');
+              // 只有已经生成 invoice_no 且 flow type 不是 QUOTATION 才算“有发票”，才能显示 Invoice/DO
+              $canViewInvoiceDo = ($invNo !== '' && $dfType !== 'QUOTATION');
+              $hasAnyPayment = !empty($hasPaymentByTxn[(int)$r['id']]);
               ?>
               <tr>
                 <td><?= h($dt) ?></td>
@@ -202,10 +231,12 @@ include __DIR__ . '/../include/header.php';
                 <td style="text-align:right;"><?= h($cur) ?> <?= number_format($amt, 2) ?></td>
                 <td>
                   <div style="display:flex;flex-wrap:wrap;gap:4px;">
-                    <?php if (!$isRejectedQuotation): ?>
+                    <?php if (!$isRejectedQuotation && $hasAnyPayment): ?>
                       <a href="<?= h($viewReceiptUrl) ?>" class="btn btn-xs btn-light">
                         <?= h(t('portal.invoices.action.view_receipts', [], 'Receipt')) ?>
                       </a>
+                    <?php endif; ?>
+                    <?php if (!$isRejectedQuotation && $canViewInvoiceDo): ?>
                       <a href="<?= h($viewInvoiceUrl) ?>" class="btn btn-xs btn-light" target="_blank">
                         Invoice
                       </a>
