@@ -40,29 +40,34 @@ if ($rows) {
     $in = implode(',', array_fill(0, count($ids), '?'));
     try {
       $sql = "
-        SELECT customer_id,
+        SELECT t.customer_id,
                SUM(
                  CASE
-                   WHEN txn_type='IN'
-                        AND UPPER(COALESCE(in_kind,''))='INVOICE'
-                        AND UPPER(COALESCE(doc_flow_status,'')) <> 'REJECTED'
-                   THEN COALESCE(order_total, amount)
+                   WHEN t.txn_type='IN'
+                        AND UPPER(COALESCE(t.in_kind,''))='INVOICE'
+                        AND UPPER(COALESCE(t.doc_flow_status,'')) <> 'REJECTED'
+                   THEN COALESCE(t.order_total, t.amount)
                    ELSE 0
                  END
                ) AS total_in,
                SUM(
                  CASE
-                   WHEN txn_type='IN'
-                        AND UPPER(COALESCE(in_kind,''))='INVOICE'
-                        AND status <> 'CONFIRMED'
-                        AND UPPER(COALESCE(doc_flow_status,'')) <> 'REJECTED'
-                   THEN COALESCE(order_total, amount)
+                   WHEN t.txn_type='IN'
+                        AND UPPER(COALESCE(t.in_kind,''))='INVOICE'
+                        AND t.status <> 'CONFIRMED'
+                        AND UPPER(COALESCE(t.doc_flow_status,'')) <> 'REJECTED'
+                   THEN GREATEST(0, COALESCE(t.order_total, t.amount) - COALESCE(p.paid_total, 0))
                    ELSE 0
                  END
                ) AS pending_in
-        FROM customer_txn
-        WHERE customer_id IN ($in)
-        GROUP BY customer_id
+        FROM customer_txn t
+        LEFT JOIN (
+          SELECT customer_txn_id, SUM(amount) AS paid_total
+          FROM customer_txn_payments
+          GROUP BY customer_txn_id
+        ) p ON p.customer_txn_id = t.id
+        WHERE t.customer_id IN ($in)
+        GROUP BY t.customer_id
       ";
       $st = $pdo->prepare($sql);
       $st->execute($ids);

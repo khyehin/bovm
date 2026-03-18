@@ -135,7 +135,9 @@ $user_summary_in  = $summary_out_admin;    // 我们付你（含 loan）
 $user_summary_net = $summary_net_admin;    // OUT - IN（summary）
 
 /*
- * Pending signatures（保留你原本逻辑）
+ * Pending signatures（客户视角）：
+ * - 只显示「客户自己还没签」的单
+ * - 签完后即从 pendingSign 消失（不再只依赖 status）
  */
 $st = $pdo->prepare("
     SELECT *
@@ -143,13 +145,69 @@ $st = $pdo->prepare("
      WHERE customer_id = :cid
        AND (is_contra IS NULL OR is_contra = 0)
        AND require_signature = 1
-       AND status <> 'CONFIRMED'
-       AND (signature_image IS NULL OR signature_image = '')
      ORDER BY txn_date ASC, id ASC
      LIMIT 10
 ");
 $st->execute([':cid' => $cid]);
-$pendingSign = $st->fetchAll();
+$pendingCandidates = $st->fetchAll() ?: [];
+
+$pendingSign = [];
+if ($pendingCandidates) {
+  $inTxnIds = [];
+  foreach ($pendingCandidates as $r) {
+    if (($r['txn_type'] ?? '') === 'IN') $inTxnIds[] = (int)($r['id'] ?? 0);
+  }
+  $inTxnIds = array_values(array_unique(array_filter($inTxnIds)));
+
+  $lastPayByTxn = [];
+  if ($inTxnIds) {
+    $in = implode(',', array_fill(0, count($inTxnIds), '?'));
+    $stp = $pdo->prepare("
+      SELECT p.*
+      FROM customer_txn_payments p
+      JOIN (
+        SELECT customer_txn_id, MAX(id) AS max_id
+        FROM customer_txn_payments
+        WHERE customer_txn_id IN ($in)
+        GROUP BY customer_txn_id
+      ) x ON x.max_id = p.id
+    ");
+    $stp->execute($inTxnIds);
+    foreach ($stp->fetchAll() as $p) {
+      $tid = (int)($p['customer_txn_id'] ?? 0);
+      if ($tid > 0) $lastPayByTxn[$tid] = $p;
+    }
+  }
+
+  foreach ($pendingCandidates as $r) {
+    $txnType = strtoupper((string)($r['txn_type'] ?? ''));
+    $signReceive = (int)($r['sign_receive'] ?? 0);
+    $signPayer   = (int)($r['sign_payer'] ?? 0);
+    $legacyBoth  = ($signReceive === 0 && $signPayer === 0);
+    $needCusSign = ($signPayer === 1) || $legacyBoth;
+
+    // 客户这边本来就不需要签 -> 不应出现在 pending signatures
+    if (!$needCusSign) continue;
+
+    $cusSigned = false;
+    if ($txnType === 'IN') {
+      $tid = (int)($r['id'] ?? 0);
+      $lp = $lastPayByTxn[$tid] ?? null;
+      if ($lp) {
+        // 有 payment：看最后一张收据上客户是否已签
+        $cusSigned = !empty($lp['payer_signature_image'] ?? '') || !empty($lp['payer_signed_at'] ?? '');
+      } else {
+        // 没有 payment：这是纯 quotation 场景，客户签名在单据本身
+        $cusSigned = !empty($r['quotation_customer_signature_image'] ?? '') || !empty($r['recipient_signed_at'] ?? '');
+      }
+    } else {
+      // OUT：客户签名在 txn.signature_image / recipient_signed_at
+      $cusSigned = !empty($r['signature_image'] ?? '') || !empty($r['recipient_signed_at'] ?? '');
+    }
+
+    if (!$cusSigned) $pendingSign[] = $r;
+  }
+}
 
 // 最近 10 条 payout 给客户（admin OUT -> customer IN）
 $st = $pdo->prepare("
@@ -227,7 +285,31 @@ include __DIR__ . '/../include/header.php';
               $typeLabel   = t('portal.dashboard.pending_type_invoice', [], 'Invoice (you pay us)');
               $typeColor   = '#b91c1c';
               $amountColor = '#b91c1c';
-              $signUrl     = url('user/txn/txn_invoice_in.php?id=' . (int)$r['id']);
+              // IN 类型：若还没有任何 payment，则先让客户在 QUOTATION 文档上签名；
+              // 只有有 payment 时才进入收据签名页。
+              $tidForSign = (int)($r['id'] ?? 0);
+              $hasPayment = false;
+              if ($tidForSign > 0) {
+                try {
+                  $stPayChk = $pdo->prepare("SELECT 1 FROM customer_txn_payments WHERE customer_txn_id = :tid LIMIT 1");
+                  $stPayChk->execute([':tid' => $tidForSign]);
+                  $hasPayment = (bool)$stPayChk->fetchColumn();
+                } catch (Throwable $e) {
+                  $hasPayment = false;
+                }
+              }
+              if ($hasPayment) {
+                $signUrl = url('user/txn/txn_invoice_in.php?id=' . $tidForSign);
+              } else {
+                $signUrl = url('user/txn/txn_doc_in.php?id=' . $tidForSign . '&customer_id=' . (int)$cid . '&doc=QUOTATION');
+              }
+
+              // pending 列表金额：若已有 payment，则显示「最后一张收据金额」而不是累计金额
+              $lp = $lastPayByTxn[$tidForSign] ?? null;
+              if ($lp) {
+                $amount = (float)($lp['amount'] ?? $amount);
+                $ccy = (string)($lp['currency'] ?? '') !== '' ? (string)$lp['currency'] : $ccy;
+              }
             }
           ?>
           <tr>

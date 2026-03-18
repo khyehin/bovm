@@ -276,7 +276,7 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
 {
     $colsTxn = table_columns($pdo, 'customer_txn');
     $st = $pdo->prepare("
-        SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, doc_flow_type, doc_flow_status
+        SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status
         FROM customer_txn
         WHERE id=:id LIMIT 1
     ");
@@ -300,9 +300,18 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
     }
     $isPaidEnough = ($orderTotal > 0 && ($paid + 0.0001) >= $orderTotal);
 
-    // ✅ 需要签名？
-    $needOur = ((int)($txn['sign_receive'] ?? 0) === 1); // 我方：payer_*
-    $needCus = ((int)($txn['sign_payer'] ?? 0) === 1);   // 客户：receiver_*
+    // ✅ 需要签名？（与 txn_receipt_in.php 对齐）
+    // - sign_receive = 我们签 => receiver_*
+    // - sign_payer   = 客户签 => payer_*
+    $needOur = ((int)($txn['sign_receive'] ?? 0) === 1); // 我们：receiver_*
+    $needCus = ((int)($txn['sign_payer'] ?? 0) === 1);   // 客户：payer_*
+
+    $requireSignature = ((int)($txn['require_signature'] ?? 0) === 1);
+    // 兼容旧数据：require_signature=1 但 sign_* 都没设时，按双方都要签
+    if ($requireSignature && !$needOur && !$needCus) {
+        $needOur = true;
+        $needCus = true;
+    }
 
     $signOk = true;
 
@@ -319,44 +328,36 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
         $stLast->execute([':id' => $txnId]);
         $last = $stLast->fetch(PDO::FETCH_ASSOC) ?: [];
 
-        if ($needOur) {
-            $ourDone = !empty($last['payer_signature_image']) || !empty($last['payer_signed_at']);
-            if (!$ourDone) $signOk = false;
-        }
-
         if ($needCus) {
-            $cusDone = !empty($last['receiver_signature_image']) || !empty($last['receiver_signed_at']);
+            // customer side
+            $cusDone = !empty($last['payer_signature_image']) || !empty($last['payer_signed_at']);
             if (!$cusDone) $signOk = false;
         }
 
-        // --- 2) fallback 到 customer_txn 自己的签名字段（兼容旧数据） ---
-        if (!$signOk) {
-            $signOk2 = true;
-
-            $cols = table_columns($pdo, 'customer_txn');
-            $st2 = $pdo->prepare("
-                SELECT signature_image, payer_signature_image, payer_signed_at, recipient_signed_at
-                FROM customer_txn
-                WHERE id=:id LIMIT 1
-            ");
-            $st2->execute([':id' => $txnId]);
-            $row = $st2->fetch(PDO::FETCH_ASSOC) ?: [];
-
-            if ($needCus) {
-                $cusDone2 = !empty($row['signature_image']) || (isset($cols['recipient_signed_at']) && !empty($row['recipient_signed_at']));
-                if (!$cusDone2) $signOk2 = false;
-            }
-
-            if ($needOur) {
-                $ourDone2 = !empty($row['payer_signature_image']) || (isset($cols['payer_signed_at']) && !empty($row['payer_signed_at']));
-                if (!$ourDone2) $signOk2 = false;
-            }
-
-            if ($signOk2) $signOk = true;
+        if ($needOur) {
+            // our side
+            $ourDone = !empty($last['receiver_signature_image']) || !empty($last['receiver_signed_at']);
+            if (!$ourDone) $signOk = false;
         }
+
+        // 不再 fallback 到 customer_txn 级别签名：
+        // IN 的签名完成度只认最后一笔 payment，避免“报价单签过就提前 CONFIRMED”。
     }
 
-    $newStatus = ($isPaidEnough && $signOk) ? 'CONFIRMED' : 'PENDING';
+    // ✅ 最终规则：
+    // 1) 先看付款是否足够：没付够，一律 PENDING
+    // 2) 付够后：
+    //    - require_signature=0：直接 CONFIRMED
+    //    - require_signature=1：只要勾选的签名方都在最后一笔 payment 签完，才 CONFIRMED
+    if (!$isPaidEnough) {
+        $newStatus = 'PENDING';
+    } else {
+        if ($requireSignature) {
+            $newStatus = $signOk ? 'CONFIRMED' : 'PENDING';
+        } else {
+            $newStatus = 'CONFIRMED';
+        }
+    }
     $flowType = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
     if (!in_array($flowType, ['NORMAL', 'QUOTATION'], true)) $flowType = 'NORMAL';
     $hasFlowStat = isset($colsTxn['doc_flow_status']);
@@ -707,9 +708,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($txn_date === '') $errors['txn_date'] = tt('admin.txn_in.err.date_required', 'Date is required');
     if ($order_total <= 0) $errors['order_total'] = tt('admin.txn_in.err.amount_gt_zero', 'Amount must be greater than 0');
 
-    // DO Number: format VMDOyyMM-00X; auto-generate when do_date set and do_number empty
-    if ($hasColDoNumber && $do_number === '' && $do_date !== '') {
-        $ym = date('ym', strtotime($do_date));
+    // DO Number: format VMDOyyMM-00X
+    // - 只要 do_number 还是空，就按「DO date > txn_date > 今天」选一个日期来自动生成
+    if ($hasColDoNumber && $do_number === '') {
+        $baseDate = $do_date !== '' ? $do_date : ($txn_date !== '' ? $txn_date : date('Y-m-d'));
+        $ym = date('ym', strtotime($baseDate));
         $prefix = 'VMDO' . $ym . '-';
         $stDo = $pdo->prepare("SELECT do_number FROM customer_txn WHERE do_number LIKE :pfx ORDER BY do_number DESC LIMIT 1");
         $stDo->execute([':pfx' => $prefix . '%']);

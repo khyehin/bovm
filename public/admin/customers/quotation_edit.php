@@ -62,6 +62,7 @@ $hasSignMode = isset($txnCols['sign_mode']);
 $hasSignReceive = isset($txnCols['sign_receive']);
 $hasSignPayer = isset($txnCols['sign_payer']);
 $hasRequireSignature = isset($txnCols['require_signature']);
+$hasRequireSignQuotation = isset($txnCols['require_sign_quotation']);
 
 $cid = (int)($_GET['customer_id'] ?? $_POST['customer_id'] ?? 0);
 $id  = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
@@ -159,12 +160,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   }
 
   // save
-  // 同步可编辑的 customer 显示信息（To / Add / Tel / Attn）
+  // 同步可编辑的 customer 显示信息（To / Add / Tel / Email / Attn）
   $custNamePosted = trim((string)($_POST['customer_name'] ?? ''));
   $custAddrPosted = (string)($_POST['customer_address'] ?? '');
   $custTelPosted  = trim((string)($_POST['customer_tel'] ?? ''));
+  $custEmailPosted = trim((string)($_POST['customer_email'] ?? ''));
   $custAttnPosted = trim((string)($_POST['customer_attn'] ?? ''));
-  if ($custNamePosted !== '' || trim($custAddrPosted) !== '' || $custTelPosted !== '' || $custAttnPosted !== '') {
+  if ($custNamePosted !== '' || trim($custAddrPosted) !== '' || $custTelPosted !== '' || $custEmailPosted !== '' || $custAttnPosted !== '') {
     $addrLines = preg_split('/\r\n|\r|\n/', (string)$custAddrPosted);
     $addrLines = array_values(array_filter(array_map('trim', $addrLines), static fn($x) => $x !== ''));
     $a1 = $addrLines[0] ?? '';
@@ -177,6 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
              address2 = :a2,
              address3 = :a3,
              contact_phone = :tel,
+             contact_email = :email,
              contact_name = :attn
        WHERE id = :cid
        LIMIT 1
@@ -186,6 +189,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       ':a2'   => $a2 !== '' ? $a2 : (string)($customer['address2'] ?? ''),
       ':a3'   => $a3 !== '' ? $a3 : (string)($customer['address3'] ?? ''),
       ':tel'  => $custTelPosted !== '' ? $custTelPosted : (string)($customer['contact_phone'] ?? ''),
+      ':email'=> $custEmailPosted !== '' ? $custEmailPosted : (string)($customer['contact_email'] ?? ''),
       ':attn' => $custAttnPosted !== '' ? $custAttnPosted : (string)($customer['contact_name'] ?? ''),
       ':cid'  => $cid,
     ]);
@@ -216,6 +220,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($hasSignReceive) { $sets[] = "sign_receive = :sign_receive"; $params[':sign_receive'] = $sign_receive; }
     if ($hasSignPayer) { $sets[] = "sign_payer = :sign_payer"; $params[':sign_payer'] = $sign_payer; }
     if ($hasRequireSignature) { $sets[] = "require_signature = :req_sig"; $params[':req_sig'] = ($sign_receive || $sign_payer) ? 1 : 0; }
+    // QUOTATION 是否要客户签名：同步到 per-doc 字段，供 txn_doc_in.php 使用
+    if ($hasRequireSignQuotation) { $sets[] = "require_sign_quotation = :req_sign_q"; $params[':req_sign_q'] = $sign_payer ? 1 : 0; }
     if ($hasDiscount) { $sets[] = "discount = :discount"; $params[':discount'] = $discount; }
     if ($hasDeliverTo) { $sets[] = "deliver_to = :deliver_to"; $params[':deliver_to'] = $deliver_to; }
     if ($hasTerms) { $sets[] = "terms = :terms"; $params[':terms'] = $terms; }
@@ -260,6 +266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($hasSignReceive) { $cols[] = 'sign_receive'; $vals[] = ':sign_receive'; }
     if ($hasSignPayer) { $cols[] = 'sign_payer'; $vals[] = ':sign_payer'; }
     if ($hasRequireSignature) { $cols[] = 'require_signature'; $vals[] = ':require_signature'; }
+    if ($hasRequireSignQuotation) { $cols[] = 'require_sign_quotation'; $vals[] = ':require_sign_quotation'; }
     $sql = "INSERT INTO customer_txn (" . implode(',', $cols) . ") VALUES (" . implode(',', $vals) . ")";
     $st = $pdo->prepare($sql);
     $st->bindValue(':customer_id', $cid);
@@ -270,6 +277,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($hasSignReceive) $st->bindValue(':sign_receive', $sign_receive);
     if ($hasSignPayer) $st->bindValue(':sign_payer', $sign_payer);
     if ($hasRequireSignature) $st->bindValue(':require_signature', ($sign_receive || $sign_payer) ? 1 : 0);
+    if ($hasRequireSignQuotation) $st->bindValue(':require_sign_quotation', $sign_payer ? 1 : 0);
     if ($hasDiscount) $st->bindValue(':discount', $discount);
     if ($hasDeliverTo) $st->bindValue(':deliver_to', $deliver_to);
     if ($hasTerms) $st->bindValue(':terms', $terms);
@@ -325,6 +333,7 @@ $customerAddr = array_filter([
   trim(implode(' ', array_filter([$customer['city'] ?? '', $customer['state'] ?? '', $customer['postcode'] ?? '']))),
 ]);
 $customerTel = (string)($customer['contact_phone'] ?? '');
+$customerEmail = (string)($customer['contact_email'] ?? '');
 $customerAttn = (string)($customer['contact_name'] ?? '');
 $customerAddrText = implode("\n", array_values(array_filter($customerAddr, static fn($x) => trim((string)$x) !== '')));
 
@@ -380,18 +389,18 @@ include __DIR__ . '/../include/header.php';
           <div>
             <div class="field-label" style="margin-bottom:4px;">To</div>
             <input type="text" name="customer_name" class="form-control" value="<?= h($customerName) ?>" style="max-width:420px;">
-            <?php if (!empty($customerAddr)): ?>
-              <div class="field-label" style="margin-bottom:4px;">Add.</div>
-              <textarea name="customer_address" class="form-control" rows="3" style="max-width:520px;white-space:pre-wrap;"><?= h($customerAddrText) ?></textarea>
-            <?php endif; ?>
-            <?php if ($customerTel !== ''): ?>
-              <div class="field-label" style="margin-bottom:4px;">Tel</div>
-              <input type="text" name="customer_tel" class="form-control" value="<?= h($customerTel) ?>" style="max-width:260px;">
-            <?php endif; ?>
-            <?php if ($customerAttn !== ''): ?>
-              <div class="field-label" style="margin-bottom:4px;">Attn.</div>
-              <input type="text" name="customer_attn" class="form-control" value="<?= h($customerAttn) ?>" style="max-width:260px;">
-            <?php endif; ?>
+
+            <div class="field-label" style="margin-bottom:4px;margin-top:8px;">Add.</div>
+            <textarea name="customer_address" class="form-control" rows="3" style="max-width:520px;white-space:pre-wrap;"><?= h($customerAddrText) ?></textarea>
+
+            <div class="field-label" style="margin-bottom:4px;margin-top:8px;">Tel</div>
+            <input type="text" name="customer_tel" class="form-control" value="<?= h($customerTel) ?>" style="max-width:260px;">
+
+            <div class="field-label" style="margin-bottom:4px;margin-top:8px;">Email</div>
+            <input type="text" name="customer_email" class="form-control" value="<?= h($customerEmail) ?>" style="max-width:320px;">
+
+            <div class="field-label" style="margin-bottom:4px;margin-top:8px;">Attn.</div>
+            <input type="text" name="customer_attn" class="form-control" value="<?= h($customerAttn) ?>" style="max-width:260px;">
           </div>
           <div>
             <div class="doc-title">QUOTATION</div>

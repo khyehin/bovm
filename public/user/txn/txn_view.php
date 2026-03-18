@@ -115,19 +115,10 @@ $shouldShowReceiptBtn = (
   )
 );
 
-// ✅ Signature 规则：只要 require_signature=1 && 非 contra，都允许 customer 签
-$hasCustomerSignature = !empty($txn['signature_image']);
-$canCustomerSign = (
-  !$isContra
-  && $requireSignature
-);
-
-// 是否提示 pending
-$pendingSignature = (
-  $canCustomerSign
-  && !$hasCustomerSignature
-  && $status !== 'CONFIRMED'
-);
+// 先给默认值，后面拿到 payments 后再按“客户是否已签”精确计算
+$canCustomerSign = false;
+$hasCustomerSignature = false;
+$pendingSignature = false;
 
 // 主附件（旧逻辑兼容）
 $attachmentPath = (string)($txn['attachment_path'] ?? '');
@@ -232,6 +223,39 @@ if ($adminType === 'IN') {
   }
 }
 
+// ✅ Signature 规则（user 端）：
+// 仅按“客户自己这一侧是否已签”判断 pending sign，不再直接依赖 txn.status
+$needCustomerSign = false;
+$customerSigned = false;
+if (!$isContra && $requireSignature) {
+  $signReceive = (int)($txn['sign_receive'] ?? 0);
+  $signPayer   = (int)($txn['sign_payer'] ?? 0);
+  $legacyBoth  = ($signReceive === 0 && $signPayer === 0);
+  $needCustomerSign = ($signPayer === 1) || $legacyBoth;
+
+  // 只有真正有 payout 金额的 OUT 才需要客户在收据上签名；
+  // 像你截图这种 amount=0、只是说明 future quotation 的 OUT，不需要出现 receipt/pending 提示。
+  if ($adminType === 'OUT' && $amount <= 0) {
+    $needCustomerSign = false;
+  }
+
+  if ($needCustomerSign) {
+    if ($adminType === 'IN') {
+      $lastPayment = $paymentLines ? $paymentLines[count($paymentLines) - 1] : null;
+      if ($lastPayment) {
+        $customerSigned = !empty($lastPayment['payer_signature_image'] ?? '') || !empty($lastPayment['payer_signed_at'] ?? '');
+      }
+    } else {
+      // OUT：客户签名存在 txn.signature_image / recipient_signed_at
+      $customerSigned = !empty($txn['signature_image'] ?? '') || !empty($txn['recipient_signed_at'] ?? '');
+    }
+  }
+}
+
+$canCustomerSign = (!$isContra && $needCustomerSign);
+$hasCustomerSignature = ($canCustomerSign && $customerSigned);
+$pendingSignature = ($canCustomerSign && !$customerSigned);
+
 // 客户视角 type
 if ($adminType === 'OUT') {
   $custType  = 'IN';
@@ -285,7 +309,7 @@ include __DIR__ . '/../include/header.php';
 
       <?php if ($adminType === 'IN' && !$isContra && !$isAllocateIn): ?>
         <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;">
-          <?php if ($flowStat !== 'REJECTED'): ?>
+          <?php if ($flowStat !== 'REJECTED' && !empty($paymentLines)): ?>
             <a href="<?= h($allReceiptsUrl) ?>" class="btn btn-primary btn-sm">
               View receipts
             </a>
@@ -379,7 +403,33 @@ include __DIR__ . '/../include/header.php';
 
   <?php if ($pendingSignature): ?>
     <div class="alert-error" style="margin-bottom:12px;">
-      <?= h(t('txn.view.alert_pending', [], 'Pending your signature.')) ?>
+      <?php
+        $hasPayments = !empty($paymentLines);
+        $hasInvoiceNo = trim((string)($txn['invoice_no'] ?? '')) !== '';
+        if ($adminType === 'OUT') {
+          // 只有真正 payout 的 OUT 才提示收据签名
+          echo h(t(
+            'txn.view.alert_pending_payout',
+            [],
+            'This payout is pending your confirmation / signature. Please click “View receipt” above to review and sign on-site with our staff.'
+          ));
+        } else {
+          // IN：区分「只有 quotation」和已经有 invoice/receipt 的情况
+          if (!$hasPayments && !$hasInvoiceNo) {
+            echo h(t(
+              'txn.view.alert_pending_quotation',
+              [],
+              'This quotation is pending your confirmation. Please click “Quotation” above to review and sign.'
+            ));
+          } else {
+            echo h(t(
+              'txn.view.alert_pending_invoice',
+              [],
+              'This payment is pending your confirmation / signature. Please click “View receipts” above to review and sign.'
+            ));
+          }
+        }
+      ?>
     </div>
   <?php elseif ($canCustomerSign && $hasCustomerSignature): ?>
     <div class="alert-success" style="margin-bottom:12px;">

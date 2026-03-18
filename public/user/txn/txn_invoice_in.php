@@ -138,6 +138,96 @@ function pay_to_base(array $p, string $baseCur): float
 }
 
 /**
+ * 用户端签名后，立刻按最新 payment 签名状态重算 IN 交易状态
+ * - require_signature=1：仅当「需要的签名方」在最后一笔 payment 上完成签名时 CONFIRMED
+ * - require_signature=0：沿用 paidEnough + signOk
+ */
+function recompute_in_txn_status_portal(PDO $pdo, int $txnId): void
+{
+  if ($txnId <= 0) return;
+
+  $st = $pdo->prepare("
+    SELECT id, currency, order_total, sign_receive, sign_payer, require_signature
+    FROM customer_txn
+    WHERE id = :id
+    LIMIT 1
+  ");
+  $st->execute([':id' => $txnId]);
+  $txn = $st->fetch(PDO::FETCH_ASSOC);
+  if (!$txn) return;
+
+  $mainCur = strtoupper(trim((string)($txn['currency'] ?? 'MYR')));
+  if ($mainCur === '') $mainCur = 'MYR';
+
+  $orderTotal = (float)($txn['order_total'] ?? 0);
+  $needOur = ((int)($txn['sign_receive'] ?? 0) === 1);
+  $needCus = ((int)($txn['sign_payer'] ?? 0) === 1);
+  $requireSignature = ((int)($txn['require_signature'] ?? 0) === 1);
+
+  // 兼容旧数据：require_signature=1 但 sign_* 都没设置时，默认双方都要签
+  if ($requireSignature && !$needOur && !$needCus) {
+    $needOur = true;
+    $needCus = true;
+  }
+
+  $stp = $pdo->prepare("
+    SELECT *
+    FROM customer_txn_payments
+    WHERE customer_txn_id = :id
+    ORDER BY pay_date ASC, id ASC
+  ");
+  $stp->execute([':id' => $txnId]);
+  $pays = $stp->fetchAll(PDO::FETCH_ASSOC);
+
+  $paid = 0.0;
+  foreach ($pays as $p) {
+    $paid += pay_to_base($p, $mainCur);
+  }
+  $paidEnough = ($orderTotal > 0 && ($paid + 0.0001) >= $orderTotal);
+
+  $signOk = true;
+  if ($needOur || $needCus) {
+    $last = $pays ? $pays[count($pays) - 1] : [];
+    $cusDone = !empty($last['payer_signature_image'] ?? '') || !empty($last['payer_signed_at'] ?? '');
+    $ourDone = !empty($last['receiver_signature_image'] ?? '') || !empty($last['receiver_signed_at'] ?? '');
+    if ($needCus && !$cusDone) $signOk = false;
+    if ($needOur && !$ourDone) $signOk = false;
+  }
+
+  // 与后台统一：
+  // 1) 钱没付够 => 一律 PENDING
+  // 2) 付够后：
+  //    - require_signature=0：直接 CONFIRMED
+  //    - require_signature=1：最后一笔 payment 上需要的签名都完成才 CONFIRMED
+  if (!$paidEnough) {
+    $newStatus = 'PENDING';
+  } else {
+    if ($requireSignature) {
+      $newStatus = $signOk ? 'CONFIRMED' : 'PENDING';
+    } else {
+      $newStatus = 'CONFIRMED';
+    }
+  }
+
+  if ($newStatus === 'CONFIRMED') {
+    $pdo->prepare("
+      UPDATE customer_txn
+      SET status='CONFIRMED',
+          confirmed_at=IFNULL(confirmed_at, NOW()),
+          updated_at=NOW()
+      WHERE id=:id
+    ")->execute([':id' => $txnId]);
+  } else {
+    $pdo->prepare("
+      UPDATE customer_txn
+      SET status='PENDING',
+          updated_at=NOW()
+      WHERE id=:id
+    ")->execute([':id' => $txnId]);
+  }
+}
+
+/**
  * ✅ build Received in (IN): bank 优先；否则显示 RECEIVED FROM: xxx
  * (schema-safe)
  */
@@ -318,6 +408,12 @@ $companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $company
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
+if ($companyEmail === '') {
+  $companyEmail = 'visionmix55@gmail.com';
+}
+if ($companyPhone === '') {
+  $companyPhone = '+6012-3139 918';
+}
 
 // ---- all payments (all receipts) ----
 $st = $pdo->prepare("
@@ -383,6 +479,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (($_POST['_action'] ?? '') === 'sav
 
         $sqlUp = "UPDATE customer_txn_payments SET " . implode(', ', $set) . " WHERE id=:pid AND customer_txn_id=:tid LIMIT 1";
         $pdo->prepare($sqlUp)->execute($params);
+
+        // ✅ 签完后立刻重算状态，避免 dashboard/txn_view 仍显示 pending
+        recompute_in_txn_status_portal($pdo, (int)$id);
 
         // ✅ 回到同一张 receipt（保留 back）—— 修复版
         $go = url('user/txn/txn_invoice_in.php?id='.$id.'&payment_id='.$pid.'&back='.rawurlencode($rawBack));
@@ -623,6 +722,22 @@ include __DIR__ . '/../include/header.php';
 
             $cusSig = $canPaySig ? (string)($payment['payer_signature_image'] ?? '') : '';
             $ourSig = $canPaySig ? (string)($payment['receiver_signature_image'] ?? '') : '';
+            $cusSignDate = '';
+            $ourSignDate = '';
+            if ($cusSig !== '') {
+              $raw = (string)($payment['payer_signed_at'] ?? '');
+              if ($raw !== '') {
+                $ts = strtotime($raw);
+                $cusSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+              }
+            }
+            if ($ourSig !== '') {
+              $raw = (string)($payment['receiver_signed_at'] ?? '');
+              if ($raw !== '') {
+                $ts = strtotime($raw);
+                $ourSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+              }
+            }
 
             $hasCustomerSig = ($cusSig !== '');
             $canCustomerSign = ($signPayer && $canPaySig && !$hasCustomerSig);
@@ -711,7 +826,7 @@ include __DIR__ . '/../include/header.php';
                           RECEIVED BY AND COMPANY STAMP
                         </div>
                         <div style="margin-top:4px;font-size:9px;">
-                          Date: <?= h($meta['receiptDate']) ?>
+                          Date: <?= h($cusSignDate) ?>
                         </div>
                       </div>
                     </td>
@@ -731,7 +846,7 @@ include __DIR__ . '/../include/header.php';
                           <?= $signReceive ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
                         </div>
                         <div style="margin-top:4px;font-size:9px;">
-                          Date: <?= h($meta['receiptDate']) ?>
+                          Date: <?= h($ourSignDate) ?>
                         </div>
                       </div>
                     </td>

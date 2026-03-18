@@ -107,6 +107,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 function detect_in_kind_simple(array $r): string {
   $raw = strtoupper(trim((string)($r['in_kind'] ?? '')));
   if ($raw !== '') {
+    // company1 视角：IN + ALLOCATE 也当成 INVOICE 显示（不让前台看到 Allocate）
+    if ($raw === 'ALLOCATE' && strtoupper(trim((string)($r['txn_type'] ?? ''))) === 'IN') {
+      return 'INVOICE';
+    }
     if (strpos($raw, 'BONUS') !== false) return 'BONUS';
     if (strpos($raw, 'RETURN') !== false) return 'RETURN';
     if (strpos($raw, 'INVOICE') !== false || strpos($raw, 'INV') !== false) return 'INVOICE';
@@ -217,7 +221,7 @@ $summary_out    = $total_out_normal + $loan_total;
 $summary_net    = $summary_in - $summary_out;
 $summary_label  = 'After contra (all figures)';
 
-// Pending payment（简化：未 CONFIRMED 且未 REJECTED 的 IN）
+// Pending payment：显示还没给的钱（order_total - 已付款）
 $pending_total = 0.0;
 foreach ($rows as $r) {
   $tType = strtoupper(trim((string)($r['txn_type'] ?? '')));
@@ -225,9 +229,14 @@ foreach ($rows as $r) {
   if (strtoupper(trim((string)($r['doc_flow_status'] ?? ''))) === 'REJECTED') continue;
   if (strtoupper(trim((string)($r['status'] ?? ''))) === 'CONFIRMED') continue;
 
+  $tid = (int)($r['id'] ?? 0);
+  $paid = (float)($paidByTxn[$tid] ?? 0);
   $orderTotal = (float)($r['order_total'] ?? 0);
   $target = $orderTotal > 0 ? $orderTotal : (float)($r['amount'] ?? 0);
-  $pending_total += $target;
+  $unpaid = $target - $paid;
+  if ($unpaid > 0.0001) {
+    $pending_total += $unpaid;
+  }
 }
 
 $page_title = 'Customer Transactions';

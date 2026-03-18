@@ -166,12 +166,20 @@ $rows = $st->fetchAll();
  * 先收集当前 rows 内所有 admin IN 的 id 去 customer_txn_payments 捞总付款 + bank ids（用于显示 method label）
  */
 $paidRawByTxn = [];   // tid => sum(amount)
+$paidSignedByTxn = []; // tid => sum(amount) after required signatures satisfied
 $bankIdsByTxn = [];   // tid => [bank_id => true]
 $inTxnIds     = [];
+$inTxnMeta    = [];   // tid => require/sign flags
 
 foreach ($rows as $r) {
     if (($r['txn_type'] ?? '') === 'IN') {
-        $inTxnIds[] = (int)$r['id'];
+        $tid = (int)$r['id'];
+        $inTxnIds[] = $tid;
+        $inTxnMeta[$tid] = [
+            'require_signature' => (int)($r['require_signature'] ?? 0),
+            'sign_receive' => (int)($r['sign_receive'] ?? 0),
+            'sign_payer' => (int)($r['sign_payer'] ?? 0),
+        ];
     }
 }
 
@@ -179,7 +187,9 @@ if ($inTxnIds) {
     $inClause = implode(',', array_fill(0, count($inTxnIds), '?'));
     try {
         $stPay = $pdo->prepare("
-            SELECT customer_txn_id, bank_account_id, amount
+            SELECT customer_txn_id, bank_account_id, amount,
+                   payer_signature_image, receiver_signature_image,
+                   payer_signed_at, receiver_signed_at
               FROM customer_txn_payments
              WHERE customer_txn_id IN ($inClause)
           ORDER BY customer_txn_id, id
@@ -192,6 +202,26 @@ if ($inTxnIds) {
             $amt = (float)($p['amount'] ?? 0);
             if (!isset($paidRawByTxn[$tid])) $paidRawByTxn[$tid] = 0.0;
             $paidRawByTxn[$tid] += $amt;
+
+            // pending amount 逻辑：
+            // - require_signature=0：付款直接进 amount（按原逻辑）
+            // - require_signature=1：只有该 payment 满足“需要签的那一方已签”才进 amount
+            $meta = $inTxnMeta[$tid] ?? ['require_signature' => 0, 'sign_receive' => 0, 'sign_payer' => 0];
+            $requireSig = ((int)($meta['require_signature'] ?? 0) === 1);
+            $signReceive = (int)($meta['sign_receive'] ?? 0);
+            $signPayer = (int)($meta['sign_payer'] ?? 0);
+            $legacyBoth = ($signReceive === 0 && $signPayer === 0);
+            $needOur = $requireSig && (($signReceive === 1) || $legacyBoth);
+            $needCus = $requireSig && (($signPayer === 1) || $legacyBoth);
+
+            $ourDone = !empty($p['receiver_signature_image'] ?? '') || !empty($p['receiver_signed_at'] ?? '');
+            $cusDone = !empty($p['payer_signature_image'] ?? '') || !empty($p['payer_signed_at'] ?? '');
+            $countThisPayment = (!$needOur || $ourDone) && (!$needCus || $cusDone);
+
+            if ($countThisPayment) {
+                if (!isset($paidSignedByTxn[$tid])) $paidSignedByTxn[$tid] = 0.0;
+                $paidSignedByTxn[$tid] += $amt;
+            }
 
             $bid = (int)($p['bank_account_id'] ?? 0);
             if ($bid > 0) {
@@ -375,9 +405,12 @@ include __DIR__ . '/../include/header.php';
           $pendingVal = 0.0;
           if ($adminType === 'IN' && $inKind === 'INVOICE') {
               $orderTotal = (float)($r['order_total'] ?? $amount);
+              $requireSig = ((int)($r['require_signature'] ?? 0) === 1);
               $paidRaw    = (float)($paidRawByTxn[$tid] ?? 0);
+              $paidSigned = (float)($paidSignedByTxn[$tid] ?? 0);
+              $paidUsed   = $requireSig ? $paidSigned : $paidRaw;
 
-              $pendingVal = max(0.0, $orderTotal - $paidRaw);
+              $pendingVal = max(0.0, $orderTotal - $paidUsed);
 
               // 已确认或流程已 REJECTED：不再显示 pending
               $docFlowStat = strtoupper(trim((string)($r['doc_flow_status'] ?? '')));

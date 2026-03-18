@@ -128,7 +128,7 @@ function pay_to_base(array $p, string $baseCur): float
 function recompute_in_txn_status(PDO $pdo, int $txnId): void
 {
   $colsTxn = table_columns($pdo, 'customer_txn');
-  $st = $pdo->prepare("SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, doc_flow_type, doc_flow_status FROM customer_txn WHERE id=:id LIMIT 1");
+  $st = $pdo->prepare("SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status FROM customer_txn WHERE id=:id LIMIT 1");
   $st->execute([':id' => $txnId]);
   $txn = $st->fetch(PDO::FETCH_ASSOC);
   if (!$txn) return;
@@ -139,6 +139,13 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
   $orderTotal = (float)($txn['order_total'] ?? 0);
   $needOur = ((int)($txn['sign_receive'] ?? 0) === 1); // 我们签
   $needCus = ((int)($txn['sign_payer'] ?? 0) === 1);   // 客户签
+
+  $requireAll = ((int)($txn['require_signature'] ?? 0) === 1);
+  // 兼容旧数据：require_signature=1 但 sign_* 都没设时，按双方都要签
+  if ($requireAll && !$needOur && !$needCus) {
+    $needOur = true;
+    $needCus = true;
+  }
 
   $paid = 0.0;
   $stp = $pdo->prepare("SELECT * FROM customer_txn_payments WHERE customer_txn_id=:id ORDER BY pay_date ASC, id ASC");
@@ -162,7 +169,21 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
     if ($needOur && !$ourDone) $signOk = false;
   }
 
-  $newStatus = ($paidEnough && $signOk) ? 'CONFIRMED' : 'PENDING';
+  // ✅ 最终状态规则（与你口头规则完全一致）：
+  // 1) 先看钱：没付够，一律 PENDING（不管要不要签名）
+  // 2) 付够后：
+  //    - require_signature=0：直接 CONFIRMED（不再被签名卡住）
+  //    - require_signature=1：必须最后一笔 payment 上「需要的双方」都签完才 CONFIRMED
+  $requireSignature = ((int)($txn['require_signature'] ?? 0) === 1);
+  if (!$paidEnough) {
+    $newStatus = 'PENDING';
+  } else {
+    if ($requireSignature) {
+      $newStatus = $signOk ? 'CONFIRMED' : 'PENDING';
+    } else {
+      $newStatus = 'CONFIRMED';
+    }
+  }
   $flowType = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
   if (!in_array($flowType, ['NORMAL', 'QUOTATION'], true)) $flowType = 'NORMAL';
   $hasFlowStat = isset($colsTxn['doc_flow_status']);
@@ -371,6 +392,13 @@ $companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $company
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
+// 收据页也强制显示公司 Email / Tel（即使 config 里没填）
+if ($companyEmail === '') {
+  $companyEmail = 'visionmix55@gmail.com';
+}
+if ($companyPhone === '') {
+  $companyPhone = '+6012-3139 918';
+}
 
 // ✅ 标题（重点：不要出现 “IN Receipt / IN Official Receipt / …IN…”）
 if ($inKind === 'RETURN') {
@@ -634,6 +662,24 @@ if (!$allowFromPortal) {
                 $cusSig = $canPaySig ? (string)($p['payer_signature_image'] ?? '') : '';
                 $ourSig = $canPaySig ? (string)($p['receiver_signature_image'] ?? '') : '';
 
+                // 签名日期：用本次 payment 的 *_signed_at，且只有有签名图片时才显示
+                $cusSignDate = '';
+                $ourSignDate = '';
+                if ($cusSig !== '') {
+                  $raw = (string)($p['payer_signed_at'] ?? '');
+                  if ($raw !== '') {
+                    $ts = strtotime($raw);
+                    $cusSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+                  }
+                }
+                if ($ourSig !== '') {
+                  $raw = (string)($p['receiver_signed_at'] ?? '');
+                  if ($raw !== '') {
+                    $ts = strtotime($raw);
+                    $ourSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+                  }
+                }
+
                 $b = null;
                 $bid = (int)($p['bank_account_id'] ?? 0);
                 if ($bid > 0) {
@@ -794,6 +840,24 @@ if (!$allowFromPortal) {
             $cusSig = $canPaySig ? (string)($payment['payer_signature_image'] ?? '') : '';
             $ourSig = $canPaySig ? (string)($payment['receiver_signature_image'] ?? '') : '';
 
+            // 单张模式的签名日期：用当前 payment 的 *_signed_at（有签名图才显示）
+            $cusSignDate = '';
+            $ourSignDate = '';
+            if ($cusSig !== '') {
+              $raw = (string)($payment['payer_signed_at'] ?? '');
+              if ($raw !== '') {
+                $ts = strtotime($raw);
+                $cusSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+              }
+            }
+            if ($ourSig !== '') {
+              $raw = (string)($payment['receiver_signed_at'] ?? '');
+              if ($raw !== '') {
+                $ts = strtotime($raw);
+                $ourSignDate = $ts ? date('d/m/Y', $ts) : $raw;
+              }
+            }
+
             $meta = receipt_meta($txn, $payment, $bankAccount, $baseCurrency);
             if ($docMode === 'DO' && !empty($txn['do_date'])) {
               $meta['docDate'] = (string)$txn['do_date'];
@@ -881,7 +945,7 @@ if (!$allowFromPortal) {
                         RECEIVED BY AND COMPANY STAMP
                       </div>
                       <div style="margin-top:4px;font-size:9px;">
-                        Date: <?= h($meta['receiptDate']) ?>
+                        Date: <?= h($cusSignDate) ?>
                       </div>
                     </div>
                   </td>
@@ -901,7 +965,7 @@ if (!$allowFromPortal) {
                         <?= $needOurSig ? "Company's Stamp &amp; Signature" : "Company's Stamp" ?>
                       </div>
                       <div style="margin-top:4px;font-size:9px;">
-                        Date: <?= h($meta['receiptDate']) ?>
+                        Date: <?= h($ourSignDate) ?>
                       </div>
                     </div>
                   </td>

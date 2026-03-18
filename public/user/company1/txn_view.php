@@ -104,7 +104,13 @@ $title      = (string)($txn['title'] ?? '');
 $notes      = (string)($txn['notes'] ?? '');
 $currencyTx = ($txn['currency'] ?: $currencyDefault);
 
-$inKind  = strtoupper((string)($txn['in_kind'] ?? 'INVOICE')); // INVOICE / RETURN / BONUS / ...
+$inKindRaw  = strtoupper((string)($txn['in_kind'] ?? 'INVOICE')); // INVOICE / RETURN / BONUS / ALLOCATE ...
+// company1 视角：IN + ALLOCATE 也当成 INVOICE 显示（不让前台看到 Allocate）
+if ($adminType === 'IN' && $inKindRaw === 'ALLOCATE') {
+  $inKind = 'INVOICE';
+} else {
+  $inKind = $inKindRaw;
+}
 $outKind = strtoupper((string)($txn['out_kind'] ?? 'NORMAL'));
 
 $requireSignature = (int)($txn['require_signature'] ?? 0) === 1;
@@ -127,7 +133,7 @@ $shouldShowReceiptBtn = (
   )
 );
 
-// ✅ Signature 规则：只要 require_signature=1 && 非 contra，都允许 customer 签
+// ✅ company1 视角：这里只用签名状态控制按钮，不需要顶部 pending 提示文案
 $hasCustomerSignature = !empty($txn['signature_image']);
 $canCustomerSign = (
   !$isContra
@@ -389,11 +395,7 @@ include __DIR__ . '/../include/header.php';
     </div>
   </div>
 
-  <?php if ($pendingSignature): ?>
-    <div class="alert-error" style="margin-bottom:12px;">
-      <?= h(t('txn.view.alert_pending', [], 'Pending your signature.')) ?>
-    </div>
-  <?php elseif ($canCustomerSign && $hasCustomerSignature): ?>
+  <?php if ($canCustomerSign && $hasCustomerSignature): ?>
     <div class="alert-success" style="margin-bottom:12px;">
       <?= h(t('txn.view.alert_signed', [], 'Signature recorded.')) ?>
     </div>
