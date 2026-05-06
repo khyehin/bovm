@@ -84,6 +84,34 @@ try {
   $rows = [];
 }
 
+$paidByTxn = [];
+if ($rows) {
+  $txnIds = [];
+  foreach ($rows as $r) {
+    $tid = (int)($r['id'] ?? 0);
+    if ($tid > 0) $txnIds[$tid] = true;
+  }
+
+  if ($txnIds) {
+    try {
+      $ids = array_keys($txnIds);
+      $inClause = implode(',', array_fill(0, count($ids), '?'));
+      $st = $pdo->prepare("
+        SELECT customer_txn_id, COALESCE(SUM(amount),0) AS paid_total
+        FROM customer_txn_payments
+        WHERE customer_txn_id IN ($inClause)
+        GROUP BY customer_txn_id
+      ");
+      $st->execute($ids);
+      foreach ($st->fetchAll() as $p) {
+        $paidByTxn[(int)($p['customer_txn_id'] ?? 0)] = (float)($p['paid_total'] ?? 0);
+      }
+    } catch (Throwable $e) {
+      $paidByTxn = [];
+    }
+  }
+}
+
 $page_title = tt('admin.dashboard.pending_page_title', [], 'Pending');
 include __DIR__ . '/../include/header.php';
 ?>
@@ -141,7 +169,8 @@ include __DIR__ . '/../include/header.php';
             <th style="width:240px;"><?= h(tt('admin.report.transaction.filter.customer', [], 'Customer')) ?></th>
             <th style="width:100px;"><?= h(tt('admin.customer_txn.field.type', [], 'Type')) ?></th>
             <th><?= h(tt('admin.customer_txn.field.title', [], 'Title')) ?></th>
-            <th style="width:140px;text-align:right;"><?= h(tt('admin.customer_txn.field.amount', [], 'Amount')) ?></th>
+            <th style="width:140px;text-align:right;"><?= h(tt('admin.customer_txn.field.amount', [], 'Total')) ?></th>
+            <th style="width:140px;text-align:right;"><?= h(tt('admin.customer_txn.list.pending', [], 'Pending')) ?></th>
             <th style="width:110px;"><?= h(tt('admin.customer_txn.field.status', [], 'Status')) ?></th>
             <th style="width:150px;"><?= h(tt('admin.customer_txn.table.actions', [], 'Actions')) ?></th>
           </tr>
@@ -149,7 +178,7 @@ include __DIR__ . '/../include/header.php';
         <tbody>
           <?php if (!$rows): ?>
             <tr>
-              <td colspan="7" style="padding:14px;font-size:13px;color:#6b7280;">
+              <td colspan="8" style="padding:14px;font-size:13px;color:#6b7280;">
                 <?= h(tt('admin.dashboard.pending_empty', [], 'No pending transactions.')) ?>
               </td>
             </tr>
@@ -164,8 +193,11 @@ include __DIR__ . '/../include/header.php';
                 if ($customerLabel !== '') $customerLabel .= ' - ';
                 $customerLabel .= (string)($r['customer_name'] ?? ('#' . $cid));
                 $currency = (string)($r['currency'] ?? 'MYR');
-                $amount = (float)($r['order_total'] ?? 0);
-                if ($amount <= 0) $amount = (float)($r['amount'] ?? 0);
+                $totalAmount = (float)($r['order_total'] ?? 0);
+                if ($totalAmount <= 0) $totalAmount = (float)($r['amount'] ?? 0);
+                $paidAmount = (float)($paidByTxn[$tid] ?? 0);
+                if ($paidAmount <= 0.000001) $paidAmount = (float)($r['amount'] ?? 0);
+                $pendingAmount = max(0.0, $totalAmount - $paidAmount);
                 $viewUrl = $txnType === 'IN'
                   ? url('admin/customers/txn_doc_in.php?id=' . $tid . '&customer_id=' . $cid . '&doc=QUOTATION')
                   : url('admin/customers/txn_view.php?id=' . $tid . '&customer_id=' . $cid);
@@ -191,7 +223,8 @@ include __DIR__ . '/../include/header.php';
                     <div class="pending-muted">Ref: <?= h($r['ref_no']) ?></div>
                   <?php endif; ?>
                 </td>
-                <td style="text-align:right;font-weight:700;"><?= h($currency) ?> <?= number_format($amount, 2) ?></td>
+                <td style="text-align:right;font-weight:700;"><?= h($currency) ?> <?= number_format($totalAmount, 2) ?></td>
+                <td style="text-align:right;font-weight:700;color:#b91c1c;"><?= h($currency) ?> <?= number_format($pendingAmount, 2) ?></td>
                 <td><span class="pending-status"><?= h(strtoupper((string)($r['status'] ?? 'PENDING'))) ?></span></td>
                 <td>
                   <div style="display:flex;gap:8px;flex-wrap:wrap;">
