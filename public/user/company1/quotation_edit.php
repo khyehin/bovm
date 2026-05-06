@@ -74,11 +74,6 @@ if ($id > 0) {
   $st->execute([':id' => $id, ':cid' => $cid]);
   $txn = $st->fetch();
   if (!$txn) { http_response_code(404); exit('Transaction not found'); }
-  // only allow edit quotation stage
-  if (trim((string)($txn['invoice_no'] ?? '')) !== '') {
-    header('Location: ' . url('user/company1/invoices.php?customer_id=' . $cid));
-    exit;
-  }
   if ($hasLines) {
     $st = $pdo->prepare("SELECT * FROM customer_txn_lines WHERE customer_txn_id=:tid ORDER BY line_seq ASC, id ASC");
     $st->execute([':tid' => $id]);
@@ -106,6 +101,14 @@ $isQuotation = true;
 if ($txn && $hasDocFlowType) {
   $isQuotation = (strtoupper((string)($txn['doc_flow_type'] ?? '')) === 'QUOTATION');
 }
+$isInvoiceDoc = false;
+if ($txn) {
+  $isInvoiceDoc = (trim((string)($txn['invoice_no'] ?? '')) !== '');
+  if (!$isInvoiceDoc && $hasDocFlowType) {
+    $isInvoiceDoc = (strtoupper((string)($txn['doc_flow_type'] ?? '')) === 'NORMAL');
+  }
+}
+$docLabel = $isInvoiceDoc ? 'Invoice' : 'Quotation';
 
 // save / process
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -325,7 +328,7 @@ $customerEmail = (string)($customer['contact_email'] ?? '');
 $customerAttn = (string)($customer['contact_name'] ?? '');
 $customerAddrText = implode("\n", array_values(array_filter($customerAddr, static fn($x) => trim((string)$x) !== '')));
 
-$page_title = $id > 0 ? ('Edit Quotation · ' . $customerName) : ('New Quotation · ' . $customerName);
+$page_title = $id > 0 ? ('Edit ' . $docLabel . ' · ' . $customerName) : ('New Quotation · ' . $customerName);
 $active_nav = 'company1_invoices';
 include __DIR__ . '/../include/header.php';
 ?>
@@ -349,7 +352,7 @@ include __DIR__ . '/../include/header.php';
         <div>
           <div class="form-page-eyebrow">Company1</div>
           <h2 class="form-page-title"><?= h($customerName) ?></h2>
-          <div class="form-page-subtitle">Quotation editor.</div>
+          <div class="form-page-subtitle"><?= h($docLabel) ?> editor.</div>
         </div>
         <div class="form-page-meta">
           <a href="<?= h(url('user/company1/invoices.php?customer_id=' . (int)$cid)) ?>" class="btn btn-light">← Back</a>
@@ -382,7 +385,7 @@ include __DIR__ . '/../include/header.php';
             <input type="text" name="customer_attn" class="form-control" value="<?= h($customerAttn) ?>" style="max-width:260px;">
           </div>
           <div>
-            <div style="font-size:18px;font-weight:700;margin-bottom:12px;">QUOTATION</div>
+            <div style="font-size:18px;font-weight:700;margin-bottom:12px;"><?= h(strtoupper($docLabel)) ?></div>
             <div class="form-group">
               <label class="field-label">Date</label>
               <input type="date" name="txn_date" class="form-control" value="<?= h($txn['txn_date'] ?? date('Y-m-d')) ?>">
@@ -485,7 +488,7 @@ include __DIR__ . '/../include/header.php';
         <?php endif; ?>
 
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;">
-          <button type="submit" class="btn btn-primary" name="_action" value="save">Save Quotation</button>
+          <button type="submit" class="btn btn-primary" name="_action" value="save">Save <?= h($docLabel) ?></button>
           <?php if ($id > 0): ?>
             <a href="<?= h(url('user/company1/txn_doc_in.php?id=' . (int)$id . '&customer_id=' . (int)$cid . '&doc=QUOTATION')) ?>" target="_blank" class="btn btn-light">Print / PDF</a>
           <?php endif; ?>

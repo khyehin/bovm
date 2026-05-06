@@ -922,6 +922,20 @@ include __DIR__ . '/../include/header.php';
                   $titleText = $uiInvoiceLabel; // "Allocate"
                 }
               }
+              // 列表页标题统一格式（仅 INVOICE 类 IN 单据）
+              if ($tType === 'IN' && $inKind === 'INVOICE') {
+                $invoiceNoR = trim((string)($r['invoice_no'] ?? ''));
+                $titleAmt = (float)($r['order_total'] ?? 0);
+                if ($titleAmt <= 0) $titleAmt = (float)($r['amount'] ?? 0);
+                $curCode = strtoupper(trim((string)$displayCurrency));
+                $moneyPrefix = ($curCode === 'MYR') ? 'RM ' : (($curCode !== '') ? ($curCode . ' ') : '');
+                $moneyText = $moneyPrefix . number_format($titleAmt, 2);
+                if ($invoiceNoR === '') {
+                  $titleText = "QUOTATION '" . (string)($customer['name'] ?? '') . "' " . $moneyText;
+                } else {
+                  $titleText = "INVOICE - " . $invoiceNoR . " - " . (string)($customer['name'] ?? '') . " - " . $moneyText;
+                }
+              }
               // ✅ 状态显示层修正（勾签名但没签完 => 强制 PENDING）
               $displayStatus = strtoupper(trim((string)($r['status'] ?? 'PENDING')));
 

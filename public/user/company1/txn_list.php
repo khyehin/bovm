@@ -437,6 +437,18 @@ include __DIR__ . '/../include/header.php';
                 $flowType   = strtoupper(trim((string)($r['doc_flow_type'] ?? '')));
                 $invoiceNoR = trim((string)($r['invoice_no'] ?? ''));
                 $isRejected = ($dfs === 'REJECTED');
+                if ($tType === 'IN' && $inKind === 'INVOICE') {
+                  $titleAmt = (float)($r['order_total'] ?? 0);
+                  if ($titleAmt <= 0) $titleAmt = (float)($r['amount'] ?? 0);
+                  $curCode = strtoupper(trim($cur));
+                  $moneyPrefix = ($curCode === 'MYR') ? 'RM ' : (($curCode !== '') ? ($curCode . ' ') : '');
+                  $moneyText = $moneyPrefix . number_format($titleAmt, 2);
+                  if ($invoiceNoR === '') {
+                    $title = "QUOTATION '" . (string)($customer['name'] ?? '') . "' " . $moneyText;
+                  } else {
+                    $title = "INVOICE - " . $invoiceNoR . " - " . (string)($customer['name'] ?? '') . " - " . $moneyText;
+                  }
+                }
                 if ($isRejected) {
                   $statusRow = 'REJECTED';
                 }

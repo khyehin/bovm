@@ -331,11 +331,18 @@ include __DIR__ . '/../include/header.php';
                   if ($dfStat === 'REJECTED') $statusStyle = 'background:#fee2e2;color:#b91c1c;';
                   elseif ($dfStat === 'PROCESSING') $statusStyle = 'background:#dbeafe;color:#1d4ed8;';
                   elseif ($dfStat === 'COMPLETED') $statusStyle = 'background:#dcfce7;color:#166534;';
-                  $title = trim((string)($r['title'] ?? ''));
-                  if ($title === '') $title = ($invNo === '' ? 'Quotation' : 'Invoice');
                   $cur = (string)($r['currency'] ?? 'MYR');
                   $amt = (float)($r['order_total'] ?? 0);
                   if ($amt <= 0) $amt = (float)($r['amount'] ?? 0);
+                  $customerName = trim((string)($r['customer_name'] ?? ''));
+                  $curCode = strtoupper(trim($cur));
+                  $moneyPrefix = ($curCode === 'MYR') ? 'RM ' : (($curCode !== '') ? ($curCode . ' ') : '');
+                  $moneyText = $moneyPrefix . number_format($amt, 2);
+                  if ($invNo === '') {
+                    $title = "QUOTATION '" . $customerName . "' " . $moneyText;
+                  } else {
+                    $title = "INVOICE - " . $invNo . " - " . $customerName . " - " . $moneyText;
+                  }
                   $isQuotationRow = ($invNo === '');
                 ?>
                 <tr>

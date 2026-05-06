@@ -276,7 +276,7 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
 {
     $colsTxn = table_columns($pdo, 'customer_txn');
     $st = $pdo->prepare("
-        SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status
+        SELECT id, customer_id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status
         FROM customer_txn
         WHERE id=:id LIMIT 1
     ");
@@ -361,6 +361,10 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
     $flowType = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
     if (!in_array($flowType, ['NORMAL', 'QUOTATION'], true)) $flowType = 'NORMAL';
     $hasFlowStat = isset($colsTxn['doc_flow_status']);
+    $hasAddrSnap1    = isset($colsTxn['customer_addr1_snapshot']);
+    $hasAddrSnap2    = isset($colsTxn['customer_addr2_snapshot']);
+    $hasAddrSnap3    = isset($colsTxn['customer_addr3_snapshot']);
+    $hasAddrSnapMeta = isset($colsTxn['customer_addr_city_state_postcode_snapshot']);
 
     if ($newStatus === 'CONFIRMED') {
         $set = [
@@ -368,12 +372,41 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
             "confirmed_at=IFNULL(confirmed_at,NOW())",
             "updated_at=NOW()",
         ];
+        $params = [':id' => $txnId];
         // paid 完成后：自动把 invoice 的 flow status 设为 COMPLETED
         if ($hasFlowStat && $flowType === 'NORMAL') {
             $set[] = "doc_flow_status='COMPLETED'";
+            // 写入“完成时地址快照”：之后门店地址更新不会影响已完成单据打印
+            $cid = (int)($txn['customer_id'] ?? 0);
+            if ($cid > 0 && ($hasAddrSnap1 || $hasAddrSnap2 || $hasAddrSnap3 || $hasAddrSnapMeta)) {
+                $stC = $pdo->prepare("
+                    SELECT address1, address2, address3, city, state, postcode
+                    FROM customers
+                    WHERE id = :id
+                    LIMIT 1
+                ");
+                $stC->execute([':id' => $cid]);
+                $c = $stC->fetch(PDO::FETCH_ASSOC) ?: [];
+
+                $addrLine4 = trim(implode(' ', array_filter([
+                    (string)($c['city'] ?? ''),
+                    (string)($c['state'] ?? ''),
+                    (string)($c['postcode'] ?? ''),
+                ])));
+
+                $params[':cas1'] = (string)($c['address1'] ?? '');
+                $params[':cas2'] = (string)($c['address2'] ?? '');
+                $params[':cas3'] = (string)($c['address3'] ?? '');
+                $params[':cam']  = $addrLine4;
+
+                if ($hasAddrSnap1)    $set[] = "customer_addr1_snapshot = IFNULL(customer_addr1_snapshot, :cas1)";
+                if ($hasAddrSnap2)    $set[] = "customer_addr2_snapshot = IFNULL(customer_addr2_snapshot, :cas2)";
+                if ($hasAddrSnap3)    $set[] = "customer_addr3_snapshot = IFNULL(customer_addr3_snapshot, :cas3)";
+                if ($hasAddrSnapMeta) $set[] = "customer_addr_city_state_postcode_snapshot = IFNULL(customer_addr_city_state_postcode_snapshot, :cam)";
+            }
         }
         $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id=:id")
-            ->execute([':id' => $txnId]);
+            ->execute($params);
     } else {
         $set = [
             "status='PENDING'",
@@ -742,7 +775,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $in = implode(',', array_fill(0, count($deletePayAttIds), '?'));
                 try {
                     $stDelPayAtt = $pdo->prepare("DELETE FROM customer_txn_payment_attachments WHERE id IN ($in)");
-                    $stDelPayAtt->execute($deletePayAttIds);
+                    $stDelPayAtt->execute(array_values($deletePayAttIds));
                 } catch (Throwable $e) {
                 }
             }
@@ -759,7 +792,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $in = implode(',', array_fill(0, count($deleteTxnAttIds), '?'));
                 try {
                     $stDel = $pdo->prepare("DELETE FROM customer_txn_attachments WHERE id IN ($in)");
-                    $stDel->execute($deleteTxnAttIds);
+                    $stDel->execute(array_values($deleteTxnAttIds));
                 } catch (Throwable $e) {
                 }
             }
@@ -792,109 +825,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             // insert/update txn
             if ((int)($txn['id'] ?? 0) <= 0) {
-                if ($hasTitle) {
-                    $sqlIns = "
-                        INSERT INTO customer_txn
-                        (
-                          customer_id, txn_type, in_kind, txn_date, currency, title,
-                          amount, order_total, payer_company_id, payer_staff_id,
-                          invoice_no, status, notes,
-                          sign_receive, sign_payer, require_signature,
-                          recipient_name, recipient_nric,
-                          created_at, updated_at
-                        )
-                        VALUES
-                        (
-                          :customer_id, 'IN', :in_kind, :txn_date, :currency, :title,
-                          0, :order_total, :payer_company_id, :payer_staff_id,
-                          :invoice_no, 'PENDING', :notes,
-                          :sign_receive, :sign_payer, :require_signature,
-                          :recipient_name, :recipient_nric,
-                          NOW(), NOW()
-                        )
-                    ";
-                } else {
-                    $sqlIns = "
-                        INSERT INTO customer_txn
-                        (
-                          customer_id, txn_type, in_kind, txn_date, currency,
-                          amount, order_total, payer_company_id, payer_staff_id,
-                          invoice_no, status, notes,
-                          sign_receive, sign_payer, require_signature,
-                          recipient_name, recipient_nric,
-                          created_at, updated_at
-                        )
-                        VALUES
-                        (
-                          :customer_id, 'IN', :in_kind, :txn_date, :currency,
-                          0, :order_total, :payer_company_id, :payer_staff_id,
-                          :invoice_no, 'PENDING', :notes,
-                          :sign_receive, :sign_payer, :require_signature,
-                          :recipient_name, :recipient_nric,
-                          NOW(), NOW()
-                        )
-                    ";
-                }
-
-                $st = $pdo->prepare($sqlIns);
-                $bind = [
-                    ':customer_id'        => $customer_id,
-                    ':in_kind'            => $postInKind,
-                    ':txn_date'           => $txn_date,
-                    ':currency'           => $txn_currency_in,
-                    ':order_total'        => $order_total,
-                    ':payer_company_id'   => $payer_company_id,
-                    ':payer_staff_id'     => $payer_staff_id,
-                    ':invoice_no'         => $invoice_no,
-                    ':notes'              => $notes,
-                    ':sign_receive'       => $sign_receive,
-                    ':sign_payer'         => $sign_payer,
-                    ':require_signature'  => $need_signature,
-                    ':recipient_name'     => $recipient_name,
-                    ':recipient_nric'     => $recipient_nric,
+                // 用数组拼 INSERT，避免动态 str_replace 造成 column/value 不一致（1136 / HY093）
+                $colsIns = [
+                    'customer_id',
+                    'txn_type',
+                    'in_kind',
+                    'txn_date',
                 ];
-                if ($hasTitle) $bind[':title'] = $title;
+                $valsIns = [
+                    ':customer_id',
+                    "'IN'",
+                    ':in_kind',
+                    ':txn_date',
+                ];
 
-                // optional columns
                 if ($hasColDoDate) {
-                    $sqlIns = str_replace(
-                        "txn_date, currency",
-                        "txn_date, do_date, currency",
-                        $sqlIns
-                    );
+                    $colsIns[] = 'do_date';
+                    $valsIns[] = ':do_date';
                 }
                 if ($hasColDoNumber) {
-                    if ($hasColDoDate) {
-                        $sqlIns = str_replace("do_date, currency", "do_date, do_number, currency", $sqlIns);
-                        $sqlIns = str_replace(":do_date, :currency", ":do_date, :do_number, :currency", $sqlIns);
-                    } else {
-                        $sqlIns = str_replace("txn_date, currency", "txn_date, do_number, currency", $sqlIns);
-                        $sqlIns = str_replace(":txn_date, :currency", ":txn_date, :do_number, :currency", $sqlIns);
-                    }
+                    $colsIns[] = 'do_number';
+                    $valsIns[] = ':do_number';
                 }
+
+                $colsIns[] = 'currency';
+                $valsIns[] = ':currency';
+
+                if ($hasTitle) {
+                    $colsIns[] = 'title';
+                    $valsIns[] = ':title';
+                }
+
+                $colsIns = array_merge($colsIns, [
+                    'amount',
+                    'order_total',
+                    'payer_company_id',
+                    'payer_staff_id',
+                    'invoice_no',
+                    'status',
+                    'notes',
+                    'sign_receive',
+                    'sign_payer',
+                    'require_signature',
+                ]);
+                $valsIns = array_merge($valsIns, [
+                    '0',
+                    ':order_total',
+                    ':payer_company_id',
+                    ':payer_staff_id',
+                    ':invoice_no',
+                    "'PENDING'",
+                    ':notes',
+                    ':sign_receive',
+                    ':sign_payer',
+                    ':require_signature',
+                ]);
+
                 if ($hasColSignMode) {
-                    $sqlIns = str_replace(
-                        "require_signature,",
-                        "require_signature, sign_mode,",
-                        $sqlIns
-                    );
+                    $colsIns[] = 'sign_mode';
+                    $valsIns[] = ':sign_mode';
                 }
 
-                // re-prepare if we modified SQL for optional columns
-                if ($hasColDoDate || $hasColSignMode || $hasColDoNumber) {
-                    $st = $pdo->prepare($sqlIns);
-                    if ($hasColDoDate) {
-                        $bind[':do_date'] = ($do_date !== '') ? $do_date : null;
-                    }
-                    if ($hasColDoNumber) {
-                        $bind[':do_number'] = $do_number;
-                    }
-                    if ($hasColSignMode) {
-                        $bind[':sign_mode'] = $sign_mode;
-                    }
-                }
+                $colsIns = array_merge($colsIns, [
+                    'recipient_name',
+                    'recipient_nric',
+                    'created_at',
+                    'updated_at',
+                ]);
+                $valsIns = array_merge($valsIns, [
+                    ':recipient_name',
+                    ':recipient_nric',
+                    'NOW()',
+                    'NOW()',
+                ]);
 
-                $st->execute($bind);
+                $sqlIns = "INSERT INTO customer_txn (`" . implode('`,`', $colsIns) . "`) VALUES (" . implode(',', $valsIns) . ")";
+                $bind = [
+                    ':customer_id'       => $customer_id,
+                    ':in_kind'           => $postInKind,
+                    ':txn_date'          => $txn_date,
+                    ':currency'          => $txn_currency_in,
+                    ':order_total'       => $order_total,
+                    ':payer_company_id'  => $payer_company_id,
+                    ':payer_staff_id'    => $payer_staff_id,
+                    ':invoice_no'        => $invoice_no,
+                    ':notes'             => $notes,
+                    ':sign_receive'      => $sign_receive,
+                    ':sign_payer'        => $sign_payer,
+                    ':require_signature' => $need_signature,
+                    ':recipient_name'    => $recipient_name,
+                    ':recipient_nric'    => $recipient_nric,
+                ];
+                if ($hasTitle) $bind[':title'] = $title;
+                if ($hasColDoDate) $bind[':do_date'] = ($do_date !== '') ? $do_date : null;
+                if ($hasColDoNumber) $bind[':do_number'] = $do_number;
+                if ($hasColSignMode) $bind[':sign_mode'] = $sign_mode;
+
+                $pdo->prepare($sqlIns)->execute($bind);
                 $txnId = (int)$pdo->lastInsertId();
             } else {
                 $txnId = (int)$txn['id'];
@@ -1213,6 +1240,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             if ($toDeletePayIds) {
+                $toDeletePayIds = array_values($toDeletePayIds);
                 $in = implode(',', array_fill(0, count($toDeletePayIds), '?'));
 
                 // delete bank txn by bank_txn_id if possible
@@ -1229,6 +1257,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($bid > 0) $bankIdsToDelete[] = $bid;
                 }
                 if ($bankIdsToDelete) {
+                    $bankIdsToDelete = array_values($bankIdsToDelete);
                     $inB = implode(',', array_fill(0, count($bankIdsToDelete), '?'));
                     try {
                         $pdo->prepare("DELETE FROM company_bank_txn WHERE id IN ($inB)")->execute($bankIdsToDelete);
@@ -1382,8 +1411,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) $pdo->rollBack();
+            // 快速定位 HY093：把完整异常(含行号/堆栈)写进 error_log
+            // 这样你不用盲猜是哪一条 SQL/execute 出问题
+            try {
+                error_log("[TXN_EDIT_IN SAVE ERROR] " . (string)$e);
+            } catch (Throwable $e2) {
+            }
             $errors['global'] = tt('admin.txn_in.err.save_failed', 'Save error: %s', ['s' => $e->getMessage()]);
             if ($errors['global'] === 'Save error: %s') $errors['global'] = 'Save error: ' . $e->getMessage();
+            // 同时把文件行号带出来（本地更快定位）
+            $errors['global'] .= ' @ ' . basename((string)$e->getFile()) . ':' . (int)$e->getLine();
         }
     }
 

@@ -45,6 +45,10 @@ function table_columns(PDO $pdo, string $table): array
 $txnCols        = table_columns($pdo, 'customer_txn');
 $hasDocFlowType = isset($txnCols['doc_flow_type']);
 $hasDocFlowStat = isset($txnCols['doc_flow_status']);
+$hasAddrSnap1    = isset($txnCols['customer_addr1_snapshot']);
+$hasAddrSnap2    = isset($txnCols['customer_addr2_snapshot']);
+$hasAddrSnap3    = isset($txnCols['customer_addr3_snapshot']);
+$hasAddrSnapMeta = isset($txnCols['customer_addr_city_state_postcode_snapshot']);
 $hasCanEditFn   = function_exists('can');
 $canEdit        = $hasCanEditFn ? (bool)can('TXN.E') : true;
 
@@ -92,6 +96,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canEdit) {
           } elseif ($next === 'REJECTED') {
             $set[] = "doc_flow_type = 'QUOTATION'";
           }
+        }
+
+        // 如果切到 COMPLETED：写入“完成时地址快照”，避免之后客户地址变更影响已完成单据打印
+        if (
+          $next === 'COMPLETED'
+          && ($hasAddrSnap1 || $hasAddrSnap2 || $hasAddrSnap3 || $hasAddrSnapMeta)
+          && $updatedCustomerId > 0
+        ) {
+          $stC = $pdo->prepare("
+            SELECT address1, address2, address3, city, state, postcode
+            FROM customers
+            WHERE id = :cid
+            LIMIT 1
+          ");
+          $stC->execute([':cid' => $updatedCustomerId]);
+          $c = $stC->fetch(PDO::FETCH_ASSOC) ?: [];
+
+          $addrLine4 = trim(implode(' ', array_filter([
+            (string)($c['city'] ?? ''),
+            (string)($c['state'] ?? ''),
+            (string)($c['postcode'] ?? ''),
+          ])));
+
+          $params[':cas1'] = (string)($c['address1'] ?? '');
+          $params[':cas2'] = (string)($c['address2'] ?? '');
+          $params[':cas3'] = (string)($c['address3'] ?? '');
+          $params[':cam']  = $addrLine4;
+
+          if ($hasAddrSnap1)    $set[] = "customer_addr1_snapshot = IFNULL(customer_addr1_snapshot, :cas1)";
+          if ($hasAddrSnap2)    $set[] = "customer_addr2_snapshot = IFNULL(customer_addr2_snapshot, :cas2)";
+          if ($hasAddrSnap3)    $set[] = "customer_addr3_snapshot = IFNULL(customer_addr3_snapshot, :cas3)";
+          if ($hasAddrSnapMeta) $set[] = "customer_addr_city_state_postcode_snapshot = IFNULL(customer_addr_city_state_postcode_snapshot, :cam)";
         }
 
         $sql = "UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id = :id";
@@ -201,8 +237,24 @@ if ($hasDocFlowStat && $rows) {
   if ($toComplete) {
     $in = implode(',', array_fill(0, count($toComplete), '?'));
     try {
-      $pdo->prepare("UPDATE customer_txn SET doc_flow_status='COMPLETED', updated_at=NOW() WHERE id IN ($in)")
-        ->execute($toComplete);
+      if ($hasAddrSnap1 || $hasAddrSnap2 || $hasAddrSnap3 || $hasAddrSnapMeta) {
+        $setParts = ["t.doc_flow_status='COMPLETED'", "t.updated_at=NOW()"];
+        if ($hasAddrSnap1)    $setParts[] = "t.customer_addr1_snapshot = IFNULL(t.customer_addr1_snapshot, c.address1)";
+        if ($hasAddrSnap2)    $setParts[] = "t.customer_addr2_snapshot = IFNULL(t.customer_addr2_snapshot, c.address2)";
+        if ($hasAddrSnap3)    $setParts[] = "t.customer_addr3_snapshot = IFNULL(t.customer_addr3_snapshot, c.address3)";
+        if ($hasAddrSnapMeta) $setParts[] = "t.customer_addr_city_state_postcode_snapshot = IFNULL(t.customer_addr_city_state_postcode_snapshot, CONCAT_WS(' ', NULLIF(c.city,''), NULLIF(c.state,''), NULLIF(c.postcode,'')))";
+
+        $sqlAuto = "
+          UPDATE customer_txn t
+          JOIN customers c ON c.id = t.customer_id
+          SET " . implode(', ', $setParts) . "
+          WHERE t.id IN ($in)
+        ";
+        $pdo->prepare($sqlAuto)->execute($toComplete);
+      } else {
+        $pdo->prepare("UPDATE customer_txn SET doc_flow_status='COMPLETED', updated_at=NOW() WHERE id IN ($in)")
+          ->execute($toComplete);
+      }
       // also reflect in memory so UI shows immediately
       foreach ($rows as &$r) {
         if (in_array((int)($r['id'] ?? 0), $toComplete, true)) {
@@ -416,12 +468,18 @@ include __DIR__ . '/../include/header.php';
               $rowCid = (int)($r['customer_id'] ?? 0);
               $dt = (string)($r['txn_date'] ?? substr((string)($r['created_at'] ?? ''), 0, 10));
               $invNo = trim((string)($r['invoice_no'] ?? ''));
-              $title = trim((string)($r['title'] ?? ''));
-              if ($title === '') $title = ($invNo === '' ? 'Quotation' : 'Invoice');
-
               $cur = (string)($r['currency'] ?? 'MYR');
               $amt = (float)($r['order_total'] ?? 0);
               if ($amt <= 0) $amt = (float)($r['amount'] ?? 0);
+              $customerName = trim((string)($r['customer_name'] ?? ''));
+              $curCode = strtoupper(trim($cur));
+              $moneyPrefix = ($curCode === 'MYR') ? 'RM ' : (($curCode !== '') ? ($curCode . ' ') : '');
+              $moneyText = $moneyPrefix . number_format($amt, 2);
+              if ($invNo === '') {
+                $title = "QUOTATION '" . $customerName . "' " . $moneyText;
+              } else {
+                $title = "INVOICE - " . $invNo . " - " . $customerName . " - " . $moneyText;
+              }
 
               $dfType = strtoupper((string)($hasDocFlowType ? ($r['doc_flow_type'] ?? 'NORMAL') : 'NORMAL'));
               if (!in_array($dfType, ['NORMAL', 'QUOTATION'], true)) $dfType = 'NORMAL';

@@ -117,6 +117,14 @@ $isQuotation = true;
 if ($txn && $hasDocFlowType) {
   $isQuotation = (strtoupper((string)($txn['doc_flow_type'] ?? '')) === 'QUOTATION');
 }
+$isInvoiceDoc = false;
+if ($txn) {
+  $isInvoiceDoc = (trim((string)($txn['invoice_no'] ?? '')) !== '');
+  if (!$isInvoiceDoc && $hasDocFlowType) {
+    $isInvoiceDoc = (strtoupper((string)($txn['doc_flow_type'] ?? '')) === 'NORMAL');
+  }
+}
+$docLabel = $isInvoiceDoc ? 'Invoice' : 'Quotation';
 
 // POST: Save or Process
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -337,7 +345,7 @@ $customerEmail = (string)($customer['contact_email'] ?? '');
 $customerAttn = (string)($customer['contact_name'] ?? '');
 $customerAddrText = implode("\n", array_values(array_filter($customerAddr, static fn($x) => trim((string)$x) !== '')));
 
-$page_title = $id > 0 ? ('Edit Quotation · ' . $customerName) : ('New Quotation · ' . $customerName);
+$page_title = $id > 0 ? ('Edit ' . $docLabel . ' · ' . $customerName) : ('New Quotation · ' . $customerName);
 include __DIR__ . '/../include/header.php';
 ?>
 
@@ -368,9 +376,9 @@ include __DIR__ . '/../include/header.php';
     <div class="admin-card admin-card-elevated" style="max-width:900px;">
       <div class="form-page-header" style="margin-bottom:16px;">
         <div>
-          <div class="form-page-eyebrow">Quotation</div>
+          <div class="form-page-eyebrow"><?= h($docLabel) ?></div>
           <h2 class="form-page-title"><?= h($customerName) ?></h2>
-          <div class="form-page-subtitle"><?= $id > 0 ? 'Edit quotation. When customer confirms, click Process to turn into Invoice.' : 'New quotation. Add items, then Save. Use Process after customer OK.' ?></div>
+          <div class="form-page-subtitle"><?= $id > 0 ? ('Edit ' . strtolower($docLabel) . '.') : 'New quotation. Add items, then Save. Use Process after customer OK.' ?></div>
         </div>
         <div class="form-page-meta">
           <a href="<?= h(url('admin/customers/invoices.php?customer_id=' . $cid)) ?>" class="btn btn-light">← Back to Invoices</a>
@@ -403,7 +411,7 @@ include __DIR__ . '/../include/header.php';
             <input type="text" name="customer_attn" class="form-control" value="<?= h($customerAttn) ?>" style="max-width:260px;">
           </div>
           <div>
-            <div class="doc-title">QUOTATION</div>
+            <div class="doc-title"><?= h(strtoupper($docLabel)) ?></div>
             <div class="form-group">
               <label class="field-label">Date</label>
               <input type="date" name="txn_date" class="form-control" value="<?= h($txn['txn_date'] ?? date('Y-m-d')) ?>">
@@ -548,7 +556,7 @@ include __DIR__ . '/../include/header.php';
         <?php endif; ?>
 
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;">
-          <button type="submit" class="btn btn-primary" name="_action" value="save">Save Quotation</button>
+          <button type="submit" class="btn btn-primary" name="_action" value="save">Save <?= h($docLabel) ?></button>
           <?php if ($id > 0): ?>
             <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$id . '&customer_id=' . (int)$cid . '&doc=QUOTATION')) ?>" target="_blank" class="btn btn-light">Print / PDF</a>
           <?php endif; ?>

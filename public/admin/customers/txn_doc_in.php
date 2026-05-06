@@ -27,7 +27,7 @@ $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 
 if (!function_exists('h')) {
-  function h($v): string
+  function h(mixed $v): string
   {
     return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
   }
@@ -103,6 +103,16 @@ if (!$txn) {
   exit('Transaction not found');
 }
 
+// 是否已开始收款：一旦有收款记录，就不再允许从文档页进入编辑
+$hasPaymentStarted = false;
+try {
+  $stPayChk = $pdo->prepare("SELECT 1 FROM customer_txn_payments WHERE customer_txn_id = :tid LIMIT 1");
+  $stPayChk->execute([':tid' => $id]);
+  $hasPaymentStarted = (bool)$stPayChk->fetchColumn();
+} catch (Throwable $e) {
+  $hasPaymentStarted = false;
+}
+
 // 未 process 成 invoice 时：打 path 也进不去 Invoice/DO，强制只能看 QUOTATION
 $docFlowStatus = strtoupper(trim((string)($txn['doc_flow_status'] ?? '')));
 $docFlowType   = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
@@ -122,12 +132,31 @@ try {
 }
 
 $customerName = (string)($customer['name'] ?? '');
-$customerAddr = array_filter([
-  (string)($customer['address1'] ?? ''),
-  (string)($customer['address2'] ?? ''),
-  (string)($customer['address3'] ?? ''),
-  trim(implode(' ', array_filter([$customer['city'] ?? '', $customer['state'] ?? '', $customer['postcode'] ?? '']))),
-]);
+// 如果单据已经 COMPLETED，则使用“完成时快照地址”，避免之后门店地址被修改导致打印内容变化
+$hasAddrSnap1   = isset($txnCols['customer_addr1_snapshot']);
+$hasAddrSnap2   = isset($txnCols['customer_addr2_snapshot']);
+$hasAddrSnap3   = isset($txnCols['customer_addr3_snapshot']);
+$hasAddrSnapMeta = isset($txnCols['customer_addr_city_state_postcode_snapshot']);
+
+$snapCustomerAddr = [];
+if ($docFlowStatus === 'COMPLETED' && ($hasAddrSnap1 || $hasAddrSnap2 || $hasAddrSnap3 || $hasAddrSnapMeta)) {
+  $snapCustomerAddr = array_filter([
+    $hasAddrSnap1 ? (string)($txn['customer_addr1_snapshot'] ?? '') : '',
+    $hasAddrSnap2 ? (string)($txn['customer_addr2_snapshot'] ?? '') : '',
+    $hasAddrSnap3 ? (string)($txn['customer_addr3_snapshot'] ?? '') : '',
+    $hasAddrSnapMeta ? (string)($txn['customer_addr_city_state_postcode_snapshot'] ?? '') : '',
+  ]);
+}
+
+$customerAddr = $snapCustomerAddr;
+if (empty($customerAddr)) {
+  $customerAddr = array_filter([
+    (string)($customer['address1'] ?? ''),
+    (string)($customer['address2'] ?? ''),
+    (string)($customer['address3'] ?? ''),
+    trim(implode(' ', array_filter([$customer['city'] ?? '', $customer['state'] ?? '', $customer['postcode'] ?? '']))),
+  ]);
+}
 $customerTel = (string)($customer['contact_phone'] ?? '');
 $customerAttn = (string)($customer['contact_name'] ?? '');
 
@@ -207,17 +236,19 @@ $preferredBanks = [];
 try {
   $stBank = $pdo->query("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE is_active = 1 ORDER BY id ASC");
   $allBanks = $stBank->fetchAll(PDO::FETCH_ASSOC) ?: [];
-  // 优先显示 CIMB 和 HONG LEONG BANK（若存在）；否则显示前两条 active
+  // 不显示 CIMB；优先显示 HONG LEONG BANK，其余显示前两条 active（排除 CIMB）
   $pick = [];
-  foreach ($allBanks as $b) {
-    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
-    if ($code === 'CIMB') $pick[] = $b;
-  }
   foreach ($allBanks as $b) {
     $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
     if ($code === 'HONG LEONG BANK') $pick[] = $b;
   }
-  if (!$pick) $pick = $allBanks;
+  if (!$pick) {
+    foreach ($allBanks as $b) {
+      $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
+      if ($code === 'CIMB') continue;
+      $pick[] = $b;
+    }
+  }
   $preferredBanks = array_slice($pick, 0, 2);
 } catch (Throwable $e) {
   $preferredBanks = [];
@@ -253,7 +284,8 @@ if ($doc === 'DO' && $docNo === '') {
 }
 $docDate = ($doc === 'DO' && !empty($txn['do_date'])) ? (string)$txn['do_date'] : (string)($txn['txn_date'] ?? date('Y-m-d'));
 $docDateFormatted = (strtotime($docDate) !== false) ? date('d/m/Y', strtotime($docDate)) : $docDate;
-$docTitle = $doc; // INVOICE | QUOTATION | DELIVERY ORDER
+// 文档页抬头只显示单据类型（INVOICE / QUOTATION / DELIVERY ORDER）
+$docTitle = $doc;
 if ($doc === 'DO') $docTitle = 'DELIVERY ORDER';
 $doNumberVal = ($doc === 'DO' && $docNo !== '') ? $docNo : trim((string)($txn['do_number'] ?? ''));
 $termsVal = trim((string)($txn['terms'] ?? ''));
@@ -747,10 +779,12 @@ if (!$allowFromPortal) {
 
     html,
     body {
-      width: 210mm;
-      height: 297mm;
       margin: 0;
       padding: 0;
+      /* 不强制 html/body 固定为 297mm，避免在部分 portal 外壳场景出现额外空白页 */
+      width: auto !important;
+      height: auto !important;
+      min-height: 0 !important;
     }
 
     .no-print {
@@ -802,14 +836,30 @@ if (!$allowFromPortal) {
       width: 100%;
     }
 
-    body.vm-print-ready .doc-print-wrap,
+    body.vm-print-ready .doc-print-wrap {
+      /* 仅用 visibility:hidden 仍会占据版面高度，可能导致多出来的“空白页” */
+      display: none !important;
+    }
     body.vm-print-ready .doc-print-wrap * {
-      visibility: hidden;
+      display: none !important;
     }
 
     body.vm-print-ready #printPages,
     body.vm-print-ready #printPages * {
       visibility: visible;
+    }
+
+    /* portal/company1 外层壳会占据打印高度，可能导致多出空白页；
+       vm-print-ready 时只保留分页容器 */
+    body.vm-print-ready>*:not(#printPages) {
+      display: none !important;
+    }
+    body.vm-print-ready #printPages {
+      display: block !important;
+      position: fixed !important;
+      left: 0 !important;
+      top: 0 !important;
+      width: 100% !important;
     }
 
     /* 关闭固定页眉页脚方案 */
@@ -1011,16 +1061,20 @@ if (!$allowFromPortal) {
     }
 
     .print-page {
-      page-break-after: always;
-      break-after: page;
       position: relative;
       overflow: hidden;
       /* 关键：避免 footer(签名) 被推到下一页 */
     }
 
-    .print-page:last-child {
-      page-break-after: auto;
-      break-after: auto;
+    /* 只在“页与页之间”断页，避免最后一页仍然强制断页导致多一张空白页 */
+    .print-page:not(:last-of-type) {
+      page-break-after: always;
+      break-after: page;
+    }
+
+    #printPages.single-page .print-page {
+      page-break-after: auto !important;
+      break-after: auto !important;
     }
 
     .print-page-header {
@@ -1306,6 +1360,9 @@ if (!$allowFromPortal) {
   $docSignCompanyUrl  = null;
   $docRequireUrl      = null;
 }
+
+$adminEditUrl = url('admin/customers/quotation_edit.php?id=' . $id . '&customer_id=' . $cid);
+$company1EditUrl = url('user/company1/quotation_edit.php?id=' . $id . '&customer_id=' . $cid);
 ?>
 
 <?php if (!$allowFromPortal): ?>
@@ -1313,6 +1370,9 @@ if (!$allowFromPortal) {
   <div class="no-print">
     <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . $id . '&customer_id=' . $cid)) ?>" class="btn btn-light">← Back</a>
     <button type="button" class="btn btn-primary" onclick="vmPrepareAndPrint();">Print / PDF</button>
+    <?php if (!$hasPaymentStarted): ?>
+      <a href="<?= h($adminEditUrl) ?>" class="btn btn-light">Edit Quotation</a>
+    <?php endif; ?>
     <div class="sig-controls" style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
       <label><input type="checkbox" id="optNeedCustomer" <?= $needCustomerSign ? 'checked' : '' ?>>Customer signature</label>
       <label><input type="checkbox" id="optNeedCompany" <?= $needCompanySign ? 'checked' : '' ?>>Company signature</label>
@@ -1344,6 +1404,9 @@ if (!$allowFromPortal) {
       ?>
       <a href="<?= h($backUrlDoc) ?>" class="btn btn-light btn-sm">← Back</a>
       <button type="button" class="btn btn-light btn-sm" onclick="vmPrepareAndPrint();">Print / PDF</button>
+      <?php if (!$hasPaymentStarted): ?>
+        <a href="<?= h($company1EditUrl) ?>" class="btn btn-light btn-sm">Edit Quotation</a>
+      <?php endif; ?>
       <div class="sig-controls" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:12px;">
         <label style="display:flex;align-items:center;gap:4px;">
           <input type="checkbox" id="optNeedCustomer" <?= $needCustomerSign ? 'checked' : '' ?>>Customer signature
@@ -1441,7 +1504,6 @@ $custEmail = trim((string)($customer['email'] ?? ''));
 
   <div class="banks">
     <div style="font-weight:800;">PREFERRED BANK</div>
-    <div class="row">BANK: CIMB &nbsp;|&nbsp; ACCOUNT NAME: VISION MIX SDN BHD &nbsp;|&nbsp; ACCOUNT NO.: 80-1144503-2</div>
     <div class="row">BANK: HONG LEONG BANK &nbsp;|&nbsp; ACCOUNT NAME: VISION MIX SDN BHD &nbsp;|&nbsp; ACCOUNT NO.: 19400128208</div>
   </div>
 
@@ -1666,6 +1728,7 @@ $custEmail = trim((string)($customer['email'] ?? ''));
     <div class="doc-bottom-banks" style="margin-top:10px;">
       <strong>PREFERRED BANK</strong>
       <?php foreach ($preferredBanks as $b): ?>
+        <?php if (strtoupper(trim((string)($b['bank_code'] ?? ''))) === 'CIMB') continue; ?>
         <div style="margin-top:4px; font-size:12px;">
           <span class="label">BANK:</span> <?= h($b['bank_code'] ?? '') ?> &nbsp;|&nbsp;
           <span class="label">ACCOUNT NAME:</span> <?= h($b['account_name'] ?? '') ?> &nbsp;|&nbsp;
@@ -2245,6 +2308,11 @@ $custEmail = trim((string)($customer['email'] ?? ''));
       var printRoot = qs('#printPages');
       if (!docRoot || !printRoot) return;
 
+      // 把分页容器提升到 body 直系层级，避免被 portal/admin 外层容器影响分页高度
+      if (printRoot.parentNode !== document.body) {
+        document.body.appendChild(printRoot);
+      }
+
       ensureTotalsClass(docRoot);
 
       var srcTable = qs('table.doc-table-items', docRoot);
@@ -2483,6 +2551,54 @@ $custEmail = trim((string)($customer['email'] ?? ''));
         packPagesToCapacity();
       }
 
+      // 防止最后一页“空白页”：有些情况下分页算法会生成尾部空页
+      // （上一页其实就能放下 totals/notes），导致第二页只有页眉/页脚。
+      if (pagesIdx.length > 1) {
+        var last = pagesIdx[pagesIdx.length - 1];
+        if (!last || last.length === 0) {
+          var prev = pagesIdx[pagesIdx.length - 2] || [];
+          var prevFit = evaluateRowsOnSinglePage(prev, true, hasNoteRow);
+          if (prevFit && prevFit.fit) {
+            pagesIdx.pop();
+          }
+        }
+      }
+
+      // 进一步：有些浏览器/字号组合会让“应该能一页放下”的单据被拆成两页，
+      // 导致最后一页几乎空白。这里用一次“宽松判定”把它合并回一页（仅在最后一页内容很少时触发）。
+      if (pagesIdx.length > 1) {
+        var last2 = pagesIdx[pagesIdx.length - 1] || [];
+        if (last2.length <= 1) {
+          var tryAll = buildAllIdx();
+          var fitInfo = evaluateRowsOnSinglePage(tryAll, !!totalsClone, hasNoteRow);
+          // 给一点容错，避免因测量误差多拆页
+          if (!fitInfo.fit) {
+            // 重新计算一次：放宽阈值（用于“避免空白页”目的）
+            var test = makePage(headerClone, footerClone);
+            test.page.style.setProperty('--hdrDrop', hdrDrop + 'px');
+            test.page.style.setProperty('--ph', (headerH + hdrDrop) + 'px');
+            test.page.style.setProperty('--pf', footerH + 'px');
+            test.page.style.setProperty('--totalsH', '0px');
+            test.page.style.setProperty('--lift', (true ? liftLast : liftNormal) + 'px');
+            var tt = cloneTableSkeleton(srcTable);
+            var ttb = qs('tbody', tt);
+            tryAll.forEach(function(idx) { ttb.appendChild(rows[idx].cloneNode(true)); });
+            if (hasNoteRow) appendNoteRowToTable(tt, noteText);
+            test.itemsWrap.appendChild(tt);
+            appendTailToWrap(test.itemsWrap, true);
+            test.totalsWrap.style.display = 'none';
+            printRoot.appendChild(test.page);
+            var availH2 = Math.ceil(test.itemsWrap.clientHeight || test.itemsWrap.offsetHeight || 0);
+            var usedH2 = Math.ceil(test.itemsWrap.scrollHeight || test.itemsWrap.offsetHeight || 0);
+            var fit2 = availH2 > 0 && usedH2 <= (availH2 + 28); // 比 evaluateRowsOnSinglePage 的 +8 更宽松
+            printRoot.removeChild(test.page);
+            if (fit2) pagesIdx = [tryAll];
+          } else {
+            pagesIdx = [tryAll];
+          }
+        }
+      }
+
       // 一次性渲染所有页面
       function renderPage(rowIndexList, isLast) {
         var p = makePage(headerClone, footerClone);
@@ -2551,6 +2667,54 @@ $custEmail = trim((string)($customer['email'] ?? ''));
         if (eno) eno.textContent = 'Page 1/1';
         printRoot.appendChild(emptyPage.page);
       }
+
+      // 最后兜底：移除“完全空白页”（公司端有时会出现第二页空白，但其实没有任何内容）
+      // 规则：当且仅当页面没有任何“真实表格行”(排除 filler) 且没有 totals 且没有 NOTE 行时，才认为是空白页。
+      (function removeBlankPrintPages() {
+        if (!printRoot || !printRoot.children || printRoot.children.length <= 1) return;
+        var pages = Array.prototype.slice.call(printRoot.children).filter(function(n) {
+          return n && n.classList && n.classList.contains('print-page');
+        });
+        if (pages.length <= 1) return;
+
+        function isBlankPage(pageEl) {
+          var table = qs('table.doc-table-items', pageEl);
+          var tbody = table ? qs('tbody', table) : null;
+          var hasTotals = !!qs('.doc-totals-block', pageEl);
+          var hasNote = !!(tbody && qs('tr.doc-note-row', tbody));
+          if (hasTotals || hasNote) return false;
+          if (!tbody) return true;
+          var trs = Array.prototype.slice.call(tbody.children).filter(function(n) {
+            return n && n.tagName === 'TR';
+          });
+          // 真实行：不是 filler，也不是全空白占位
+          var real = trs.filter(function(tr) {
+            if (tr.classList && tr.classList.contains('doc-filler-row')) return false;
+            var txt = (tr.textContent || '').replace(/\s+/g, '');
+            return txt !== '';
+          });
+          return real.length === 0;
+        }
+
+        // 只移除末尾的空白页（最常见：第二页空白）
+        for (var i = pages.length - 1; i >= 0; i--) {
+          if (!isBlankPage(pages[i])) break;
+          printRoot.removeChild(pages[i]);
+        }
+
+        // 重新编号
+        var finalPages = Array.prototype.slice.call(printRoot.children).filter(function(n) {
+          return n && n.classList && n.classList.contains('print-page');
+        });
+        var tp = finalPages.length || 1;
+        if (printRoot.classList) {
+          printRoot.classList.toggle('single-page', tp <= 1);
+        }
+        finalPages.forEach(function(p, idx) {
+          var no = qs('.print-page-no', p);
+          if (no) no.textContent = 'Page ' + (idx + 1) + '/' + tp;
+        });
+      })();
     }
 
     var built = false;

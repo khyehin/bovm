@@ -343,6 +343,8 @@ $page_title = function_exists('t')
   ? t('admin.dashboard.title', [], 'Dashboard')
   : 'Dashboard';
 
+$pendingDashboardUrl = url('admin/dashboard/pending.php');
+
 include __DIR__ . '/../include/header.php';
 ?>
 
@@ -366,6 +368,15 @@ include __DIR__ . '/../include/header.php';
     font-size: 12px;
     color: #991b1b;
     font-weight: 700;
+  }
+
+  a.pending-chip {
+    text-decoration: none;
+  }
+
+  a.pending-chip:hover {
+    border-color: #fca5a5;
+    box-shadow: 0 6px 16px rgba(153, 27, 27, .12);
   }
 
   .dashboard-cards {
@@ -592,10 +603,10 @@ include __DIR__ . '/../include/header.php';
           <h1 class="page-title"><?= h($page_title) ?></h1>
 
           <div class="dashboard-topline">
-            <div class="pending-chip">
+            <a class="pending-chip" href="<?= h($pendingDashboardUrl) ?>">
               <?= h(tt('admin.dashboard.pending_sig', [], 'Pending signature')) ?>:
               <span><?= (int)$pendingSigCount ?></span>
-            </div>
+            </a>
           </div>
         </div>
       </div>

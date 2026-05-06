@@ -128,7 +128,7 @@ function pay_to_base(array $p, string $baseCur): float
 function recompute_in_txn_status(PDO $pdo, int $txnId): void
 {
   $colsTxn = table_columns($pdo, 'customer_txn');
-  $st = $pdo->prepare("SELECT id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status FROM customer_txn WHERE id=:id LIMIT 1");
+  $st = $pdo->prepare("SELECT id, customer_id, in_kind, currency, order_total, sign_receive, sign_payer, require_signature, doc_flow_type, doc_flow_status FROM customer_txn WHERE id=:id LIMIT 1");
   $st->execute([':id' => $txnId]);
   $txn = $st->fetch(PDO::FETCH_ASSOC);
   if (!$txn) return;
@@ -187,11 +187,46 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
   $flowType = strtoupper(trim((string)($txn['doc_flow_type'] ?? 'NORMAL')));
   if (!in_array($flowType, ['NORMAL', 'QUOTATION'], true)) $flowType = 'NORMAL';
   $hasFlowStat = isset($colsTxn['doc_flow_status']);
+  $hasAddrSnap1    = isset($colsTxn['customer_addr1_snapshot']);
+  $hasAddrSnap2    = isset($colsTxn['customer_addr2_snapshot']);
+  $hasAddrSnap3    = isset($colsTxn['customer_addr3_snapshot']);
+  $hasAddrSnapMeta = isset($colsTxn['customer_addr_city_state_postcode_snapshot']);
 
   if ($newStatus === 'CONFIRMED') {
     $set = ["status='CONFIRMED'", "confirmed_at=IFNULL(confirmed_at,NOW())", "updated_at=NOW()"];
-    if ($hasFlowStat && $flowType === 'NORMAL') $set[] = "doc_flow_status='COMPLETED'";
-    $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id=:id")->execute([':id' => $txnId]);
+    $params = [':id' => $txnId];
+    if ($hasFlowStat && $flowType === 'NORMAL') {
+      $set[] = "doc_flow_status='COMPLETED'";
+
+      $cid = (int)($txn['customer_id'] ?? 0);
+      if ($cid > 0 && ($hasAddrSnap1 || $hasAddrSnap2 || $hasAddrSnap3 || $hasAddrSnapMeta)) {
+        $stC = $pdo->prepare("
+          SELECT address1, address2, address3, city, state, postcode
+          FROM customers
+          WHERE id = :id
+          LIMIT 1
+        ");
+        $stC->execute([':id' => $cid]);
+        $c = $stC->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $addrLine4 = trim(implode(' ', array_filter([
+          (string)($c['city'] ?? ''),
+          (string)($c['state'] ?? ''),
+          (string)($c['postcode'] ?? ''),
+        ])));
+
+        $params[':cas1'] = (string)($c['address1'] ?? '');
+        $params[':cas2'] = (string)($c['address2'] ?? '');
+        $params[':cas3'] = (string)($c['address3'] ?? '');
+        $params[':cam']  = $addrLine4;
+
+        if ($hasAddrSnap1)    $set[] = "customer_addr1_snapshot = IFNULL(customer_addr1_snapshot, :cas1)";
+        if ($hasAddrSnap2)    $set[] = "customer_addr2_snapshot = IFNULL(customer_addr2_snapshot, :cas2)";
+        if ($hasAddrSnap3)    $set[] = "customer_addr3_snapshot = IFNULL(customer_addr3_snapshot, :cas3)";
+        if ($hasAddrSnapMeta) $set[] = "customer_addr_city_state_postcode_snapshot = IFNULL(customer_addr_city_state_postcode_snapshot, :cam)";
+      }
+    }
+    $pdo->prepare("UPDATE customer_txn SET " . implode(', ', $set) . " WHERE id=:id")->execute($params);
   } else {
     $set = ["status='PENDING'", "updated_at=NOW()"];
     if ($hasFlowStat && $flowType === 'NORMAL') $set[] = "doc_flow_status='PROCESSING'";
