@@ -8,6 +8,9 @@ require_perm('TXN.E');
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+  app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
   function h($v): string {
@@ -375,6 +378,18 @@ if (!$customer) {
   exit('Customer not found');
 }
 
+if (empty($customer['currency']) && !empty($customer['category_id'])) {
+  try {
+    $catCols = table_columns($pdo, 'customer_categories');
+    if (isset($catCols['currency'])) {
+      $stCur = $pdo->prepare("SELECT currency FROM customer_categories WHERE id = :id LIMIT 1");
+      $stCur->execute([':id' => (int)$customer['category_id']]);
+      $customer['currency'] = strtoupper(trim((string)($stCur->fetchColumn() ?: '')));
+    }
+  } catch (Throwable $e) {}
+}
+$baseCurrency = strtoupper(trim((string)($customer['currency'] ?? $baseCurrency))) ?: 'MYR';
+
 $paySourceCustomers = [];
 try {
   $st = $pdo->prepare("
@@ -482,6 +497,11 @@ if (!is_dir($uploadBaseDir)) {
    POST
 =========================== */
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+  if (function_exists('app_upload_is_oversized_post') && app_upload_is_oversized_post()) {
+    $errors['general'] = function_exists('app_upload_oversized_post_message')
+      ? app_upload_oversized_post_message()
+      : 'Upload failed: request too large.';
+  } else {
 
   $data['txn_date'] = $_POST['txn_date'] ?? $data['txn_date'];
   $data['txn_type'] = 'OUT';
@@ -639,11 +659,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $tmpN = $tmp[$i] ?? '';
 
       if ($err !== UPLOAD_ERR_OK) {
-        $multiUploadNotes[] = sprintf(
-          t('admin.customer_txn.attach.multi_error', [], 'File "%s" upload error (code %d).'),
-          $origName,
-          (int)$err
-        );
+        $multiUploadNotes[] = function_exists('app_upload_error_message')
+          ? app_upload_error_message((int)$err, $origName)
+          : sprintf(
+            t('admin.customer_txn.attach.multi_error', [], 'File "%s" upload error (code %d).'),
+            $origName,
+            (int)$err
+          );
         continue;
       }
 
@@ -891,6 +913,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       if ($pdo->inTransaction()) $pdo->rollBack();
       $errors['general'] = 'Save failed: ' . $e->getMessage();
     }
+  }
   }
 }
 
@@ -1239,6 +1262,9 @@ $uploadBaseUrl = (defined('BASE_URL') ? rtrim((string)BASE_URL, '/') : '') . '/.
           <div class="form-group">
             <label class="field-label"><?= h(t('admin.customer_txn.attach.all', [], 'Attachments (PDF / image)')) ?></label>
             <input type="file" name="attachments[]" class="form-control" accept=".pdf,image/*" multiple>
+            <?php if (function_exists('app_upload_limit_label')): ?>
+              <div style="font-size:11px;color:#6b7280;margin-top:2px;"><?= h('Max ' . app_upload_limit_label()) ?></div>
+            <?php endif; ?>
 
             <?php if ($extraFiles): ?>
               <div style="margin-top:8px;">

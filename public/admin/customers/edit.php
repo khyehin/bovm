@@ -8,12 +8,31 @@ require_perm('CUSTOMER.E');   // 需要 CUSTOMER.E 才能新增/修改 customer
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+    app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
     function h($v): string {
         return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8');
     }
 }
+
+function table_columns(PDO $pdo, string $table): array {
+    static $cache = [];
+    if (isset($cache[$table])) return $cache[$table];
+    $cols = [];
+    try {
+        $st = $pdo->query("DESCRIBE `$table`");
+        foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            if (!empty($r['Field'])) $cols[(string)$r['Field']] = true;
+        }
+    } catch (Throwable $e) {}
+    return $cache[$table] = $cols;
+}
+
+$customerCols = table_columns($pdo, 'customers');
+$hasCustomerCurrency = isset($customerCols['currency']);
 
 $hasT = function_exists('t');
 
@@ -46,6 +65,7 @@ $data = [
   'state'                => '',
   'postcode'             => '',
   'country'              => 'Malaysia',
+  'currency'             => 'MYR',
   'is_active'            => 1,
 ];
 
@@ -65,6 +85,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($k === 'is_active') continue;
         $data[$k] = trim((string)($_POST[$k] ?? ''));
     }
+    $data['currency'] = strtoupper(trim((string)($data['currency'] ?: 'MYR')));
+    if ($data['currency'] === '') $data['currency'] = 'MYR';
     $data['is_active'] = isset($_POST['is_active']) ? 1 : 0;
 
     if ($data['code'] === '') {
@@ -81,21 +103,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!$errors) {
         try {
             if ($isNew) {
+                $currencyInsertCol = $hasCustomerCurrency ? ", currency" : "";
+                $currencyInsertVal = $hasCustomerCurrency ? ", :currency" : "";
                 $sql = "INSERT INTO customers
                         (code, name, reg_no, billing_name,
                          contact_name, contact_phone, contact_email,
                          default_receipt_name, default_receipt_nric,
                          address1, address2, address3,
                          city, state, postcode, country,
-                         is_active, created_at)
+                         is_active{$currencyInsertCol}, created_at)
                         VALUES
                         (:code,:name,:reg_no,:billing_name,
                          :contact_name,:contact_phone,:contact_email,
                          :default_receipt_name,:default_receipt_nric,
                          :address1,:address2,:address3,
                          :city,:state,:postcode,:country,
-                         :is_active, NOW())";
+                         :is_active{$currencyInsertVal}, NOW())";
             } else {
+                $currencyUpdate = $hasCustomerCurrency ? "currency = :currency," : "";
                 $sql = "UPDATE customers SET
                           code = :code,
                           name = :name,
@@ -113,6 +138,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                           state = :state,
                           postcode = :postcode,
                           country = :country,
+                          {$currencyUpdate}
                           is_active = :is_active,
                           updated_at = NOW()
                         WHERE id = :id";
@@ -137,6 +163,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ':country'              => $data['country'],
                 ':is_active'            => $data['is_active'],
             ];
+            if ($hasCustomerCurrency) {
+                $params[':currency'] = $data['currency'];
+            }
             if (!$isNew) {
                 $params[':id'] = $id;
             }
@@ -146,6 +175,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             if ($isNew) {
                 $id = (int)$pdo->lastInsertId();
+            }
+
+            if (!$isNew && $hasCustomerCurrency) {
+                try {
+                    $txnColsForCurrency = table_columns($pdo, 'customer_txn');
+                    if (isset($txnColsForCurrency['currency'])) {
+                        $pdo->prepare("
+                            UPDATE customer_txn
+                               SET currency = :currency
+                             WHERE customer_id = :id
+                               AND (currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) = 'MYR')
+                        ")->execute([':currency' => $data['currency'], ':id' => $id]);
+                    }
+                } catch (Throwable $e) {
+                }
             }
 
             // 🔍 Audit log: CUSTOMER.CREATE / CUSTOMER.UPDATE
@@ -312,6 +356,14 @@ include __DIR__ . '/../include/header.php';
           </label>
           <input type="text" name="billing_name" class="form-control"
                  value="<?= h($data['billing_name']) ?>">
+        </div>
+
+        <div class="form-group">
+          <label class="field-label">Currency</label>
+          <input type="text" name="currency" class="form-control" value="<?= h($data['currency'] ?? 'MYR') ?>">
+          <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+            Use MYR, USDT, USD, etc. This controls customer list totals and new transaction defaults.
+          </div>
         </div>
       </div>
     </div>

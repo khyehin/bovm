@@ -8,6 +8,9 @@ require_perm('CUSTOMER.V');
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+  app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
   function h($v): string { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
@@ -18,7 +21,28 @@ if (!function_exists('tt')) {
     return $fallback !== '' ? $fallback : $key;
   }
 }
-function rm(float $v): string { return 'RM ' . number_format($v, 2); }
+function money(string $currency, float $v): string {
+  $currency = strtoupper(trim($currency ?: 'MYR'));
+  return $currency . ' ' . number_format($v, 2);
+}
+
+function table_columns(PDO $pdo, string $table): array {
+  static $cache = [];
+  if (isset($cache[$table])) return $cache[$table];
+  $cols = [];
+  try {
+    $st = $pdo->query("DESCRIBE `$table`");
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+      if (!empty($r['Field'])) $cols[(string)$r['Field']] = true;
+    }
+  } catch (Throwable $e) {}
+  return $cache[$table] = $cols;
+}
+
+$customerCols = table_columns($pdo, 'customers');
+$catCols = table_columns($pdo, 'customer_categories');
+$hasCustomerCurrency = isset($customerCols['currency']);
+$hasCategoryCurrency = isset($catCols['currency']);
 
 $search = trim($_GET['q'] ?? '');
 
@@ -36,8 +60,31 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'set_category') {
 
     $catVal = ($newCat > 0) ? $newCat : null;
 
-    $st = $pdo->prepare("UPDATE customers SET category_id = :cat WHERE id = :id");
-    $st->execute([':cat' => $catVal, ':id' => $cid]);
+    $currency = null;
+    if ($hasCategoryCurrency && $newCat > 0) {
+      $stCur = $pdo->prepare("SELECT currency FROM customer_categories WHERE id = :id LIMIT 1");
+      $stCur->execute([':id' => $newCat]);
+      $currency = strtoupper(trim((string)($stCur->fetchColumn() ?: '')));
+    }
+
+    if ($hasCustomerCurrency && $currency !== '') {
+      $st = $pdo->prepare("UPDATE customers SET category_id = :cat, currency = :currency WHERE id = :id");
+      $st->execute([':cat' => $catVal, ':currency' => $currency, ':id' => $cid]);
+      try {
+        $txnColsMove = table_columns($pdo, 'customer_txn');
+        if (isset($txnColsMove['currency'])) {
+          $pdo->prepare("
+            UPDATE customer_txn
+               SET currency = :currency
+             WHERE customer_id = :id
+               AND (currency IS NULL OR TRIM(currency) = '' OR UPPER(TRIM(currency)) = 'MYR')
+          ")->execute([':currency' => $currency, ':id' => $cid]);
+        }
+      } catch (Throwable $e) {}
+    } else {
+      $st = $pdo->prepare("UPDATE customers SET category_id = :cat WHERE id = :id");
+      $st->execute([':cat' => $catVal, ':id' => $cid]);
+    }
 
     echo json_encode(['ok' => 1]);
   } catch (Throwable $e) {
@@ -53,7 +100,7 @@ if (isset($_POST['ajax']) && $_POST['ajax'] === 'set_category') {
 $categories = [];
 try {
   $categories = $pdo->query("
-    SELECT id, name, sort_order
+    SELECT id, name" . ($hasCategoryCurrency ? ", currency" : "") . ", sort_order
     FROM customer_categories
     ORDER BY sort_order ASC, id ASC
   ")->fetchAll() ?: [];
@@ -66,7 +113,9 @@ try {
 }
 
 $catMap = [0 => 'Unassigned'];
+$catCurrencyMap = [0 => 'MYR'];
 foreach ($categories as $c) $catMap[(int)$c['id']] = (string)$c['name'];
+foreach ($categories as $c) $catCurrencyMap[(int)$c['id']] = strtoupper(trim((string)($c['currency'] ?? 'MYR'))) ?: 'MYR';
 
 /* ============================
    Aggregation SQL (SOURCE OF TRUTH)
@@ -198,6 +247,10 @@ foreach ($rows as $r) {
   $r['_out_after'] = $outAfter;
   $r['_net_after'] = $inAfter - $outAfter;
   $r['_return']    = $loan - $repay;
+  $r['_currency']  = strtoupper(trim((string)(
+    ($hasCustomerCurrency ? ($r['currency'] ?? '') : '')
+    ?: ($catCurrencyMap[$gid] ?? 'MYR')
+  ))) ?: 'MYR';
 
   $groups[$gid][] = $r;
 }
@@ -214,6 +267,7 @@ foreach ($groups as $gid => $list) {
     'net'     => 0.0,
     'pending' => 0.0,
     'return'  => 0.0,
+    'currency' => $catCurrencyMap[(int)$gid] ?? 'MYR',
   ];
   foreach ($list as $r) {
     $summaryByCat[$gid]['count']++;
@@ -550,6 +604,7 @@ html, body {
             <?php
               $gid = (int)$cat['id'];
               $s = $summaryByCat[$gid] ?? ['count'=>0,'in'=>0,'out'=>0,'net'=>0,'pending'=>0,'return'=>0];
+              $catCurrency = strtoupper(trim((string)($s['currency'] ?? ($catCurrencyMap[$gid] ?? 'MYR')))) ?: 'MYR';
 
               $net = (float)$s['net'];
               $pending = (float)$s['pending'];
@@ -570,24 +625,24 @@ html, body {
               <div class="sum-grid">
                 <div>
                   <div class="k">IN</div>
-                  <div class="v"><?= h(rm((float)$s['in'])) ?></div>
+                  <div class="v"><?= h(money($catCurrency, (float)$s['in'])) ?></div>
                   <div class="dim">before contra</div>
                 </div>
                 <div>
                   <div class="k">OUT</div>
-                  <div class="v"><?= h(rm((float)$s['out'])) ?></div>
+                  <div class="v"><?= h(money($catCurrency, (float)$s['out'])) ?></div>
                 </div>
                 <div>
                   <div class="k">NET</div>
-                  <div class="v <?= h($netClass) ?>"><?= h(rm($net)) ?></div>
+                  <div class="v <?= h($netClass) ?>"><?= h(money($catCurrency, $net)) ?></div>
                 </div>
                 <div>
                   <div class="k">PENDING</div>
-                  <div class="v <?= h($pendClass) ?>"><?= h(rm($pending)) ?></div>
+                  <div class="v <?= h($pendClass) ?>"><?= h(money($catCurrency, $pending)) ?></div>
                 </div>
                 <div>
                   <div class="k">RETURN</div>
-                  <div class="v <?= h($retClass) ?>"><?= h(rm($ret)) ?></div>
+                  <div class="v <?= h($retClass) ?>"><?= h(money($catCurrency, $ret)) ?></div>
                 </div>
                 <div><div class="k"></div><div class="v"></div></div>
               </div>
@@ -668,6 +723,7 @@ html, body {
                     $net      = (float)($c['_net_after'] ?? 0);
                     $pending  = (float)($c['pending_total'] ?? 0);
                     $ret      = (float)($c['_return'] ?? 0);
+                    $rowCurrency = strtoupper(trim((string)($c['_currency'] ?? 'MYR'))) ?: 'MYR';
 
                     $netColor = $net > 0 ? '#b91c1c' : ($net < 0 ? '#166534' : '#6b7280');
                     $netText = ($net > 0)
@@ -697,12 +753,12 @@ html, body {
                       <?php endif; ?>
                     </td>
 
-                    <td class="money"><?= h(rm($inBefore)) ?></td>
-                    <td class="money"><?= h(rm($inAfter)) ?></td>
-                    <td class="money"><?= h(rm($outAfter)) ?></td>
+                    <td class="money"><?= h(money($rowCurrency, $inBefore)) ?></td>
+                    <td class="money"><?= h(money($rowCurrency, $inAfter)) ?></td>
+                    <td class="money"><?= h(money($rowCurrency, $outAfter)) ?></td>
 
                     <td class="money">
-                      <div style="font-weight:900;color:<?= h($netColor) ?>;"><?= h(rm($net)) ?></div>
+                      <div style="font-weight:900;color:<?= h($netColor) ?>;"><?= h(money($rowCurrency, $net)) ?></div>
                       <div class="dim"><?= h($netText) ?></div>
                     </td>
 
@@ -713,7 +769,7 @@ html, body {
                         <div style="display:flex;flex-direction:column;gap:6px;">
                           <span class="pbadge recv"><?= h($pendLabel) ?></span>
                           <span style="font-weight:900; color:<?= h($pendNumColor) ?>;">
-                            <?= h(rm($pending)) ?>
+                            <?= h(money($rowCurrency, $pending)) ?>
                           </span>
                         </div>
                       <?php endif; ?>
@@ -723,7 +779,7 @@ html, body {
                       <?php if (abs($ret) <= 0.0001): ?>
                         <span class="dim">—</span>
                       <?php else: ?>
-                        <div style="font-weight:900;color:<?= h($retColor) ?>;"><?= h(rm($ret)) ?></div>
+                        <div style="font-weight:900;color:<?= h($retColor) ?>;"><?= h(money($rowCurrency, $ret)) ?></div>
                         <div class="dim">
                           <?= $ret > 0
                             ? h(tt('admin.customers.return.outstanding','Outstanding (customer owes us)'))

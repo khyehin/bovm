@@ -201,10 +201,12 @@ function handle_multi_upload(PDO $pdo, int $bankTxnId, string $uploadBaseDir, ar
     if ($err === UPLOAD_ERR_NO_FILE) continue;
 
     if ($err !== UPLOAD_ERR_OK) {
-      $errors['attach_multi'][] = tt('admin.bank.txn_edit.attach.err_upload', [
-        'name' => $name,
-        'code' => (string)$err
-      ], 'File "{name}" upload error (code {code}).');
+      $errors['attach_multi'][] = function_exists('app_upload_error_message')
+        ? app_upload_error_message($err, $name)
+        : tt('admin.bank.txn_edit.attach.err_upload', [
+          'name' => $name,
+          'code' => (string)$err
+        ], 'File "{name}" upload error (code {code}).');
       continue;
     }
 
@@ -290,9 +292,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
   // 1) Detect oversized POST (post_max_size exceeded) -> PHP will give empty $_POST and $_FILES
   if (empty($_POST) && empty($_FILES) && !empty($_SERVER['CONTENT_LENGTH'])) {
-    $postMax = ini_get('post_max_size') ?: 'unknown';
-    $upMax   = ini_get('upload_max_filesize') ?: 'unknown';
-    $errors['general'] = "Upload failed: request too large. Server limits: post_max_size={$postMax}, upload_max_filesize={$upMax}.";
+    $errors['general'] = function_exists('app_upload_oversized_post_message')
+      ? app_upload_oversized_post_message()
+      : 'Upload failed: request too large.';
   }
 
   // 2) Attachment delete action (do it early, before save)
@@ -752,6 +754,9 @@ include __DIR__ . '/../include/header.php';
               <input type="file" name="attachments[]" class="form-control" multiple>
               <div style="font-size:11px;color:#6b7280;margin-top:2px;">
                 <?= h(tt('admin.bank.txn_edit.attach.tip_types', [], 'PDF, PNG, JPG, GIF')) ?>
+                <?php if (function_exists('app_upload_limit_label')): ?>
+                  <?= h(' · Max ' . app_upload_limit_label()) ?>
+                <?php endif; ?>
               </div>
             </div>
 

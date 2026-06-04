@@ -18,6 +18,9 @@ if (!$allowFromCompany1) {
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+    app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
     function h($v)
@@ -498,6 +501,18 @@ if (!$customer) {
     http_response_code(404);
     exit(tt('admin.txn_in.err.customer_not_found', 'Customer not found'));
 }
+if (empty($customer['currency']) && !empty($customer['category_id'])) {
+    try {
+        $catCols = table_columns($pdo, 'customer_categories');
+        if (isset($catCols['currency'])) {
+            $stCur = $pdo->prepare("SELECT currency FROM customer_categories WHERE id = :id LIMIT 1");
+            $stCur->execute([':id' => (int)$customer['category_id']]);
+            $customer['currency'] = strtoupper(trim((string)($stCur->fetchColumn() ?: '')));
+        }
+    } catch (Throwable $e) {
+    }
+}
+if (empty($customer['currency'])) $customer['currency'] = 'MYR';
 
 // ---------- Bank Accounts ----------
 $bankSql = "
@@ -668,8 +683,14 @@ $pending = max(0, $order_total - $paid_total);
 // POST: Save
 // ======================================================
 $errors = [];
+$uploadNotes = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (function_exists('app_upload_is_oversized_post') && app_upload_is_oversized_post()) {
+        $errors['global'] = function_exists('app_upload_oversized_post_message')
+            ? app_upload_oversized_post_message()
+            : 'Upload failed: request too large.';
+    } else {
 
     $txn_date       = (string)($_POST['txn_date'] ?? ($txn['txn_date'] ?? ''));
     $do_date        = (string)($_POST['do_date'] ?? ($txn['do_date'] ?? ''));
@@ -1194,7 +1215,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $orig = (string)($names[$i] ?? '');
                         if ($orig === '') continue;
                         $err  = (int)($errs[$i] ?? UPLOAD_ERR_NO_FILE);
-                        if ($err !== UPLOAD_ERR_OK) continue;
+                        if ($err !== UPLOAD_ERR_OK) {
+                            $uploadNotes[] = function_exists('app_upload_error_message')
+                                ? app_upload_error_message($err, $orig)
+                                : 'File "' . $orig . '" upload error (code ' . $err . ').';
+                            continue;
+                        }
                         $tmpF = (string)($tmpn[$i] ?? '');
                         if (!is_uploaded_file($tmpF)) continue;
 
@@ -1203,7 +1229,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         if ($ext !== '') $safe .= '.' . $ext;
 
                         $absPath = $payAttachDir . '/' . $safe;
-                        if (!@move_uploaded_file($tmpF, $absPath)) continue;
+                        if (!@move_uploaded_file($tmpF, $absPath)) {
+                            $uploadNotes[] = 'File "' . $orig . '" failed to move.';
+                            continue;
+                        }
 
                         $relPath = 'uploads/txn_payment/' . $safe;
                         $mime    = (string)($types[$i] ?? '');
@@ -1296,7 +1325,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $orig = (string)($names[$i] ?? '');
                     if ($orig === '') continue;
                     $err  = (int)($errs[$i] ?? UPLOAD_ERR_NO_FILE);
-                    if ($err !== UPLOAD_ERR_OK) continue;
+                    if ($err !== UPLOAD_ERR_OK) {
+                        $uploadNotes[] = function_exists('app_upload_error_message')
+                            ? app_upload_error_message($err, $orig)
+                            : 'File "' . $orig . '" upload error (code ' . $err . ').';
+                        continue;
+                    }
                     $tmpF = (string)($tmpn[$i] ?? '');
                     if (!is_uploaded_file($tmpF)) continue;
 
@@ -1305,7 +1339,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     if ($ext !== '') $safe .= '.' . $ext;
 
                     $absPath = $notesDir . '/' . $safe;
-                    if (!@move_uploaded_file($tmpF, $absPath)) continue;
+                    if (!@move_uploaded_file($tmpF, $absPath)) {
+                        $uploadNotes[] = 'File "' . $orig . '" failed to move.';
+                        continue;
+                    }
 
                     $relPath = 'uploads/txn_notes/' . $safe;
                     $mime    = (string)($types[$i] ?? '');
@@ -1469,6 +1506,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($cur === $txnCurrency) $paid_total += $amount;
     }
     $pending = max(0, (float)($txn['order_total'] ?? 0) - $paid_total);
+    }
 }
 
 // ======================================================
@@ -1704,6 +1742,13 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                 <div class="alert-error" style="margin-bottom:12px;"><?= h($errors['global']) ?></div>
             <?php elseif ($ok === '1'): ?>
                 <div class="alert-success" style="margin-bottom:12px;"><?= h(tt('admin.txn_in.saved', 'IN transaction saved.')) ?></div>
+            <?php endif; ?>
+            <?php if ($uploadNotes): ?>
+                <div class="alert-error" style="margin-bottom:12px;">
+                    <?php foreach ($uploadNotes as $note): ?>
+                        <div><?= h($note) ?></div>
+                    <?php endforeach; ?>
+                </div>
             <?php endif; ?>
 
             <form method="post" enctype="multipart/form-data" class="form-layout">

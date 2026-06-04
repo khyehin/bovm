@@ -12,6 +12,8 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/company.php';
 require_once __DIR__ . '/i18n.php';
 require_once __DIR__ . '/../app/helpers.php';
+require_once __DIR__ . '/../app/upload.php';
+require_once __DIR__ . '/../app/customer_currency.php';
 require_once __DIR__ . '/../app/auth.php';
 require_once __DIR__ . '/../app/permissions.php';
 

@@ -128,6 +128,12 @@ $form_label  = $_POST['label']  ?? '';
 $form_remark = $_POST['remark'] ?? '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (function_exists('app_upload_is_oversized_post') && app_upload_is_oversized_post()) {
+        $errors['general'] = function_exists('app_upload_oversized_post_message')
+            ? app_upload_oversized_post_message()
+            : 'Upload failed: request too large.';
+    }
+
     $month  = trim($_POST['month'] ?? '');
     $label  = trim($_POST['label'] ?? '');
     $remark = trim($_POST['remark'] ?? '');
@@ -147,7 +153,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $statement_date = $period_to ?: ($period_from ?: date('Y-m-d'));
 
     $file = $_FILES['statement_file'] ?? null;
-    if (!$file || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+    if (!$errors && (!$file || ($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE)) {
         $errors['file'] = tt('admin.bank.stmt.err.file_required', [], 'Please choose a statement file.');
     }
 
@@ -156,7 +162,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $type = $file['type'] ?? '';
 
         if ($err !== UPLOAD_ERR_OK) {
-            $errors['file'] = tt('admin.bank.stmt.err.upload', ['code' => (string)$err], 'Upload error (code {code}).');
+            $errors['file'] = function_exists('app_upload_error_message')
+                ? app_upload_error_message((int)$err, (string)($file['name'] ?? ''))
+                : tt('admin.bank.stmt.err.upload', ['code' => (string)$err], 'Upload error (code {code}).');
         } else {
             $allowed = ['application/pdf','image/png','image/jpeg','image/jpg','image/gif'];
             if ($type && !in_array($type, $allowed, true)) {
@@ -337,7 +345,12 @@ include __DIR__ . '/../include/header.php';
             <label class="field-label"><?= h(tt('admin.bank.stmt.file', [], 'Statement file')) ?> *</label>
             <input type="file" name="statement_file" class="form-control">
             <?php if (isset($errors['file'])): ?><div class="form-error"><?= h($errors['file']) ?></div><?php endif; ?>
-            <div style="font-size:11px;color:#6b7280;margin-top:2px;"><?= h(tt('admin.bank.stmt.file_tip', [], 'PDF, PNG, JPG, GIF')) ?></div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+              <?= h(tt('admin.bank.stmt.file_tip', [], 'PDF, PNG, JPG, GIF')) ?>
+              <?php if (function_exists('app_upload_limit_label')): ?>
+                <?= h(' · Max ' . app_upload_limit_label()) ?>
+              <?php endif; ?>
+            </div>
           </div>
 
           <div>

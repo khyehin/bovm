@@ -8,6 +8,9 @@ require_perm('TXN.V');   // 需要 TXN.V 权限才能看客户交易列表
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+  app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
   function h($v): string
@@ -84,6 +87,17 @@ function table_columns(PDO $pdo, string $table): array
 
 $txnCols = table_columns($pdo, 'customer_txn');
 $payCols = table_columns($pdo, 'customer_txn_payments');
+$catCols = table_columns($pdo, 'customer_categories');
+
+if (empty($customer['currency']) && !empty($customer['category_id']) && isset($catCols['currency'])) {
+  try {
+    $stCur = $pdo->prepare("SELECT currency FROM customer_categories WHERE id = :id LIMIT 1");
+    $stCur->execute([':id' => (int)$customer['category_id']]);
+    $customer['currency'] = strtoupper(trim((string)($stCur->fetchColumn() ?: '')));
+  } catch (Throwable $e) {
+  }
+}
+if (empty($customer['currency'])) $customer['currency'] = 'MYR';
 
 /**
  * ✅ 统一识别 in_kind（解决 in_kind='' / title 不一致）
@@ -455,7 +469,7 @@ foreach ($rows as $r) {
 }
 
 $summaryRows   = [];
-$baseCurrency  = $customer['currency'] ?? 'MYR';
+$baseCurrency  = strtoupper(trim((string)($customer['currency'] ?? 'MYR'))) ?: 'MYR';
 
 foreach ($contraSumByKey as $info) {
   $summaryRows[] = [
@@ -553,24 +567,24 @@ include __DIR__ . '/../include/header.php';
       <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13px; margin-bottom:12px;">
         <div style="min-width:170px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.total_in', 'Total IN')) ?></div>
-          <div style="font-size:18px;font-weight:600;margin-top:4px;">MYR <?= number_format($total_in_normal, 2) ?></div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;"><?= h($baseCurrency) ?> <?= number_format($total_in_normal, 2) ?></div>
         </div>
 
         <div style="min-width:170px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.total_out', 'Total OUT')) ?></div>
-          <div style="font-size:18px;font-weight:600;margin-top:4px;">MYR <?= number_format($total_out_normal, 2) ?></div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;"><?= h($baseCurrency) ?> <?= number_format($total_out_normal, 2) ?></div>
         </div>
 
         <div style="min-width:210px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.net_normal', 'Net')) ?></div>
           <?php if ($net_normal > 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;">MYR <?= number_format($net_normal, 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;"><?= h($baseCurrency) ?> <?= number_format($net_normal, 2) ?></div>
             <div style="font-size:12px;color:#b91c1c;"><?= h(tt('admin.customers.list.net_label_we_owe', 'We owe customer')) ?></div>
           <?php elseif ($net_normal < 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;">MYR <?= number_format(abs($net_normal), 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;"><?= h($baseCurrency) ?> <?= number_format(abs($net_normal), 2) ?></div>
             <div style="font-size:12px;color:#166534;"><?= h(tt('admin.customers.list.net_label_cust_owe', 'Customer owes us')) ?></div>
           <?php else: ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;">MYR 0.00</div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;"><?= h($baseCurrency) ?> 0.00</div>
             <div style="font-size:12px;color:#6b7280;"><?= h(tt('admin.customers.list.net_label_balanced', 'Balanced')) ?></div>
           <?php endif; ?>
         </div>
@@ -578,7 +592,7 @@ include __DIR__ . '/../include/header.php';
         <div style="min-width:210px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.pending', 'Pending payment')) ?></div>
           <div style="font-size:18px;font-weight:600;margin-top:4px;color:#0f766e;">
-            <?= h($customer['currency'] ?? 'MYR') ?> <?= number_format($pending_total, 2) ?>
+            <?= h($baseCurrency) ?> <?= number_format($pending_total, 2) ?>
           </div>
         </div>
       </div>
@@ -587,44 +601,44 @@ include __DIR__ . '/../include/header.php';
         <div style="min-width:210px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.return_balance', 'Return')) ?></div>
           <?php if ($return_balance > 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;">MYR <?= number_format($return_balance, 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;"><?= h($baseCurrency) ?> <?= number_format($return_balance, 2) ?></div>
             <div style="font-size:12px;color:#b91c1c;"><?= h(tt('admin.customer_txn.list.return_still_owing', 'Customer still has our capital (outstanding)')) ?></div>
           <?php elseif ($return_balance < 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;">MYR <?= number_format(abs($return_balance), 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;"><?= h($baseCurrency) ?> <?= number_format(abs($return_balance), 2) ?></div>
             <div style="font-size:12px;color:#166534;"><?= h(tt('admin.customer_txn.list.return_profit', 'Capital fully returned')) ?></div>
           <?php else: ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;">MYR 0.00</div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;"><?= h($baseCurrency) ?> 0.00</div>
             <div style="font-size:12px;color:#6b7280;"><?= h(tt('admin.customer_txn.list.return_balanced', 'Capital fully returned')) ?></div>
           <?php endif; ?>
         </div>
 
         <div style="min-width:210px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.total_bonus', 'Total BONUS')) ?></div>
-          <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;">MYR <?= number_format($bonus_total, 2) ?></div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;"><?= h($baseCurrency) ?> <?= number_format($bonus_total, 2) ?></div>
         </div>
       </div>
 
       <div style="display:flex; gap:18px; flex-wrap:wrap; font-size:13px;">
         <div style="min-width:170px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.summary_in', 'Summary total IN')) ?></div>
-          <div style="font-size:18px;font-weight:600;margin-top:4px;">MYR <?= number_format($summary_in, 2) ?></div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;"><?= h($baseCurrency) ?> <?= number_format($summary_in, 2) ?></div>
         </div>
 
         <div style="min-width:170px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.summary_out', 'Summary total OUT')) ?></div>
-          <div style="font-size:18px;font-weight:600;margin-top:4px;">MYR <?= number_format($summary_out, 2) ?></div>
+          <div style="font-size:18px;font-weight:600;margin-top:4px;"><?= h($baseCurrency) ?> <?= number_format($summary_out, 2) ?></div>
         </div>
 
         <div style="min-width:210px;">
           <div style="color:#6b7280;"><?= h(tt('admin.customer_txn.list.summary.summary_net', 'Summary net')) ?></div>
           <?php if ($summary_net > 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;">MYR <?= number_format($summary_net, 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#b91c1c;"><?= h($baseCurrency) ?> <?= number_format($summary_net, 2) ?></div>
             <div style="font-size:12px;color:#b91c1c;"><?= h(tt('admin.customers.list.net_label_we_owe', 'We owe customer')) ?></div>
           <?php elseif ($summary_net < 0): ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;">MYR <?= number_format(abs($summary_net), 2) ?></div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#166534;"><?= h($baseCurrency) ?> <?= number_format(abs($summary_net), 2) ?></div>
             <div style="font-size:12px;color:#166534;"><?= h(tt('admin.customers.list.net_label_cust_owe', 'Customer owes us')) ?></div>
           <?php else: ?>
-            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;">MYR 0.00</div>
+            <div style="font-size:18px;font-weight:600;margin-top:4px;color:#111827;"><?= h($baseCurrency) ?> 0.00</div>
             <div style="font-size:12px;color:#6b7280;"><?= h(tt('admin.customers.list.net_label_balanced', 'Balanced')) ?></div>
           <?php endif; ?>
         </div>
