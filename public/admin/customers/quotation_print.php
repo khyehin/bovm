@@ -102,24 +102,11 @@ $companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $company
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
-$preferredBanks = [];
-try {
-  $stBank = $pdo->query("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE is_active = 1 ORDER BY id ASC");
-  $allBanks = $stBank->fetchAll(PDO::FETCH_ASSOC) ?: [];
-  $pick = [];
-  foreach ($allBanks as $b) {
-    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
-    if ($code === 'CIMB') $pick[] = $b;
-  }
-  foreach ($allBanks as $b) {
-    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
-    if ($code === 'HONG LEONG BANK') $pick[] = $b;
-  }
-  if (!$pick) $pick = $allBanks;
-  $preferredBanks = array_slice($pick, 0, 2);
-} catch (Throwable $e) {
-  $preferredBanks = [];
-}
+$preferredBanks = [[
+  'bank_code' => 'HONG LEONG BANK',
+  'account_name' => 'VISION MIX SDN BHD',
+  'account_no' => '19400128208',
+]];
 
 $page_title = 'Quotation · ' . $customerName;
 include __DIR__ . '/../include/header.php';
@@ -298,11 +285,6 @@ include __DIR__ . '/../include/header.php';
         <span class="label">ACCOUNT NO.:</span> <?= h($b['account_no'] ?? '') ?>
       </div>
     <?php endforeach; ?>
-    <div style="margin-top:4px;">
-      <span class="label">BANK:</span> HONG LEONG BANK &nbsp;|&nbsp;
-      <span class="label">ACCOUNT NAME:</span> VISION MIX SDN BHD &nbsp;|&nbsp;
-      <span class="label">ACCOUNT NO.:</span> 19400128208
-    </div>
   </div>
   <?php endif; ?>
 

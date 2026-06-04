@@ -68,6 +68,20 @@ function has_col(PDO $pdo, string $table, string $col): bool
     return isset($cols[strtolower($col)]);
 }
 
+function ensure_in_kind_combo_schema(PDO $pdo): void
+{
+    try {
+        $st = $pdo->query("SHOW COLUMNS FROM customer_txn LIKE 'in_kind'");
+        $col = $st ? $st->fetch(PDO::FETCH_ASSOC) : null;
+        $type = strtoupper((string)($col['Type'] ?? ''));
+        if ($type !== '' && strpos($type, 'INVOICE+RETURN') === false) {
+            $pdo->exec("ALTER TABLE customer_txn MODIFY in_kind ENUM('INVOICE','RETURN','BONUS','ALLOCATE','INVOICE+RETURN','INVOICE+BONUS') NOT NULL DEFAULT 'INVOICE'");
+        }
+    } catch (Throwable $e) {
+        try { error_log('[TXN_EDIT_IN SCHEMA] Failed to ensure in_kind combos: ' . $e->getMessage()); } catch (Throwable $e2) {}
+    }
+}
+
 /**
  * Convert DB file_path to browser URL
  */
@@ -424,8 +438,45 @@ function recompute_in_txn_status(PDO $pdo, int $txnId): void
     }
 }
 
-// IN kinds
-$validInKinds = ['INVOICE', 'RETURN', 'BONUS'];
+// IN kinds. RETURN and BONUS are mutually exclusive financial categories; INVOICE can be combined
+// with either one so an invoice document can still be treated as repayment/bonus in reports.
+$validInKinds = ['INVOICE', 'RETURN', 'BONUS', 'INVOICE+RETURN', 'INVOICE+BONUS'];
+
+function normalize_in_kind(string $raw): string
+{
+    $raw = strtoupper(trim($raw));
+    if ($raw === '') return 'INVOICE';
+
+    $hasInvoice = (strpos($raw, 'INVOICE') !== false || preg_match('/(^|[^A-Z])INV([^A-Z]|$)/', $raw));
+    $hasReturn  = (strpos($raw, 'RETURN') !== false || strpos($raw, 'REPAY') !== false);
+    $hasBonus   = (strpos($raw, 'BONUS') !== false);
+
+    if ($hasReturn) return $hasInvoice ? 'INVOICE+RETURN' : 'RETURN';
+    if ($hasBonus) return $hasInvoice ? 'INVOICE+BONUS' : 'BONUS';
+    return 'INVOICE';
+}
+
+function in_kind_has(string $kind, string $part): bool
+{
+    $kind = normalize_in_kind($kind);
+    return strpos('+' . $kind . '+', '+' . strtoupper($part) . '+') !== false;
+}
+
+function in_kind_financial(string $kind): string
+{
+    $kind = normalize_in_kind($kind);
+    if (in_kind_has($kind, 'RETURN')) return 'RETURN';
+    if (in_kind_has($kind, 'BONUS')) return 'BONUS';
+    return 'INVOICE';
+}
+
+function in_kind_default_title(string $kind): string
+{
+    $financial = in_kind_financial($kind);
+    if ($financial === 'RETURN') return in_kind_has($kind, 'INVOICE') ? 'Invoice + Repayment' : 'Repayment';
+    if ($financial === 'BONUS') return in_kind_has($kind, 'INVOICE') ? 'Invoice + Bonus' : 'Bonus';
+    return 'Invoice';
+}
 
 // extra columns (schema-safe flags)
 $txnCols           = table_columns($pdo, 'customer_txn');
@@ -437,6 +488,8 @@ $hasColDocFlowStat = isset($txnCols['doc_flow_status']);
 $hasColRequireSignQuotation = isset($txnCols['require_sign_quotation']);
 $hasColRequireSignInvoice   = isset($txnCols['require_sign_invoice']);
 $hasColRequireSignDo        = isset($txnCols['require_sign_do']);
+ensure_in_kind_combo_schema($pdo);
+$txnCols = table_columns($pdo, 'customer_txn');
 
 // ---------- params ----------
 $customer_id = (int)($_GET['customer_id'] ?? $_POST['customer_id'] ?? 0);
@@ -465,10 +518,7 @@ if ($id > 0) {
     }
     $txn = $row;
 
-    $curInKind = strtoupper(trim((string)($row['in_kind'] ?? 'INVOICE')));
-    if (!in_array($curInKind, $validInKinds, true)) {
-        $curInKind = 'INVOICE';
-    }
+    $curInKind = normalize_in_kind((string)($row['in_kind'] ?? 'INVOICE'));
     $txn['in_kind'] = $curInKind;
 
     $txnCustomerId = (int)$row['customer_id'];
@@ -636,7 +686,7 @@ if ($txn === null) {
 
 // ---------- Auto-fill suggested invoice_no for display (user can change; save uses submitted or auto-generate if blank) ----------
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    $isInvoiceKindDisplay = (strtoupper((string)($txn['in_kind'] ?? 'INVOICE')) === 'INVOICE');
+    $isInvoiceKindDisplay = in_kind_has((string)($txn['in_kind'] ?? 'INVOICE'), 'INVOICE');
     if ($isInvoiceKindDisplay && trim((string)($txn['invoice_no'] ?? '')) === '') {
         $txnDate = $txn['txn_date'] ?? date('Y-m-d');
         $ym = date('ym', strtotime($txnDate));
@@ -716,16 +766,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // when CHOP_ONLY, we don't require our signature (only company chop)
     if ($sign_mode === 'CHOP_ONLY') $sign_receive = 0;
 
-    $postInKind = strtoupper(trim((string)($_POST['in_kind'] ?? ($txn['in_kind'] ?? 'INVOICE'))));
-    if (!in_array($postInKind, $validInKinds, true)) $postInKind = 'INVOICE';
+    $postInKind = normalize_in_kind((string)($_POST['in_kind'] ?? ($txn['in_kind'] ?? 'INVOICE')));
 
     // Company1 入口：IN 类型和金额从现有交易锁定，不能被前端篡改
     if ($allowFromCompany1) {
         if (isset($txn['in_kind'])) {
-            $postInKind = strtoupper(trim((string)$txn['in_kind']));
-            if (!in_array($postInKind, $validInKinds, true)) {
-                $postInKind = 'INVOICE';
-            }
+            $postInKind = normalize_in_kind((string)$txn['in_kind']);
         }
         if (isset($txn['order_total'])) {
             $order_total = (float)$txn['order_total'];
@@ -734,9 +780,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // ✅ 默认 title（server side：避免空）
     if ($title === '') {
-        if ($postInKind === 'RETURN') $title = 'Repayment';
-        elseif ($postInKind === 'BONUS') $title = 'Bonus';
-        else $title = 'Invoice';
+        $title = in_kind_default_title($postInKind);
     }
 
     $payer_company_id = (isset($_POST['payer_company_id']) && $_POST['payer_company_id'] !== '')
@@ -819,7 +863,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // auto invoice_no (only for INVOICE)
-            if ($invoice_no === '' && $postInKind === 'INVOICE') {
+            if ($invoice_no === '' && in_kind_has($postInKind, 'INVOICE')) {
                 $ym = date('ym', strtotime($txn_date));
                 $prefix = "VM{$ym}-";
                 $st = $pdo->prepare("
@@ -838,7 +882,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $invoice_no = $prefix . str_pad((string)$seqNo, 3, '0', STR_PAD_LEFT);
             }
 
-            if ($postInKind !== 'INVOICE') {
+            if (!in_kind_has($postInKind, 'INVOICE')) {
                 $invoice_no = '';
             }
 
@@ -1365,7 +1409,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             // ✅ amount 存储规则（保留你原本那套）
-            $amountStore = ($postInKind === 'INVOICE') ? $totalPaidMain : $order_total;
+            $amountStore = (in_kind_financial($postInKind) === 'INVOICE') ? $totalPaidMain : $order_total;
             $pdo->prepare("UPDATE customer_txn SET amount = :amt WHERE id = :id")
                 ->execute([':amt' => $amountStore, ':id' => $txnId]);
 
@@ -1571,7 +1615,7 @@ if (!$allowFromCompany1) {
     include __DIR__ . '/../include/header.php';
 }
 
-$isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
+$isInvoiceKind = in_kind_has((string)($txn['in_kind'] ?? 'INVOICE'), 'INVOICE');
 ?>
 <style>
     .admin-card-narrow {
@@ -1778,18 +1822,25 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                         <div class="form-group">
                             <label class="field-label"><?= h(tt('admin.txn_in.field.in_type', 'IN type')) ?></label>
                             <select name="in_kind" id="in_kind_select" class="form-control" <?= $allowFromCompany1 ? 'disabled' : '' ?>>
-                                <option value="INVOICE" <?= (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE') ? 'selected' : '' ?>>
+                                <?php $kindNow = normalize_in_kind((string)($txn['in_kind'] ?? 'INVOICE')); ?>
+                                <option value="INVOICE" <?= $kindNow === 'INVOICE' ? 'selected' : '' ?>>
                                     <?= h(tt('admin.txn_in.in_kind.invoice', 'Invoice / normal IN')) ?>
                                 </option>
-                                <option value="RETURN" <?= (($txn['in_kind'] ?? 'INVOICE') === 'RETURN') ? 'selected' : '' ?>>
+                                <option value="INVOICE+RETURN" <?= $kindNow === 'INVOICE+RETURN' ? 'selected' : '' ?>>
+                                    Invoice + Repayment
+                                </option>
+                                <option value="INVOICE+BONUS" <?= $kindNow === 'INVOICE+BONUS' ? 'selected' : '' ?>>
+                                    Invoice + Bonus
+                                </option>
+                                <option value="RETURN" <?= $kindNow === 'RETURN' ? 'selected' : '' ?>>
                                     <?= h(tt('admin.txn_in.in_kind.return', 'Repayment / return capital')) ?>
                                 </option>
-                                <option value="BONUS" <?= (($txn['in_kind'] ?? 'INVOICE') === 'BONUS') ? 'selected' : '' ?>>
+                                <option value="BONUS" <?= $kindNow === 'BONUS' ? 'selected' : '' ?>>
                                     <?= h(tt('admin.txn_in.in_kind.bonus', 'Bonus / profit share')) ?>
                                 </option>
                             </select>
                             <div style="font-size:11px;color:#6b7280;margin-top:2px;">
-                                <?= h(tt('admin.txn_in.in_kind.help', 'INVOICE = invoice; RETURN = capital; BONUS = others')) ?>
+                                <?= h(tt('admin.txn_in.in_kind.help', 'INVOICE = invoice; RETURN = capital; BONUS = others')) ?>; Invoice + Repayment / Bonus allowed
                             </div>
                         </div>
 
@@ -1988,7 +2039,7 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
                                             </td>
                                             <td>
                                                 <?php if (!empty($pl['id'] ?? null) && !empty($txn['id'])): ?>
-                                                    <?php if (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE'): ?>
+                                                    <?php if (in_kind_has((string)($txn['in_kind'] ?? 'INVOICE'), 'INVOICE')): ?>
                                                         <?php
                                                           $backUrl = $_SERVER['REQUEST_URI'] ?? '';
                                                           $receiptUrl = url('admin/customers/txn_receipt_in.php?id=' . (int)$txn['id'] . '&payment_id=' . (int)$pl['id']);
@@ -2431,19 +2482,21 @@ $isInvoiceKind = (($txn['in_kind'] ?? 'INVOICE') === 'INVOICE');
             kind = (kind || 'INVOICE').toUpperCase();
             if (kind === 'RETURN') return 'Repayment';
             if (kind === 'BONUS') return 'Bonus';
+            if (kind === 'INVOICE+RETURN') return 'Invoice + Repayment';
+            if (kind === 'INVOICE+BONUS') return 'Invoice + Bonus';
             return 'Invoice';
         }
 
         function isDefaultTitle(v) {
             v = (v || '').trim();
-            return (v === '' || v === 'Invoice' || v === 'Repayment' || v === 'Bonus');
+            return (v === '' || v === 'Invoice' || v === 'Repayment' || v === 'Bonus' || v === 'Invoice + Repayment' || v === 'Invoice + Bonus');
         }
         let lastAutoTitle = titleInput ? (titleInput.value || '').trim() : '';
 
         function applyInKindUI() {
             if (!inKindSel) return;
             const val = (inKindSel.value || 'INVOICE').toUpperCase();
-            const isInvoice = (val === 'INVOICE');
+            const isInvoice = (val.indexOf('INVOICE') !== -1);
 
             if (invoiceNoInput) {
                 if (isInvoice) {

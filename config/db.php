@@ -3,9 +3,9 @@
 declare(strict_types=1);
 
 $DB_HOST = '127.0.0.1';
-$DB_NAME = 'bovm';        
+$DB_NAME = 'bovm_restore';        
 $DB_USER = 'root';
-$DB_PASS = '';
+$DB_PASS = 'V@siOn555';
 
 function get_pdo(): PDO {
     static $pdo = null;

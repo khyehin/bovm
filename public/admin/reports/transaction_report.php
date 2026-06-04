@@ -236,14 +236,17 @@ $sumSql = "
   SELECT
     SUM(CASE
       WHEN t.txn_type = 'IN'
-       AND UPPER(COALESCE(t.in_kind,'')) = 'INVOICE'
+       AND UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%'
+       AND UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%RETURN%'
+       AND UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%REPAY%'
+       AND UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%BONUS%'
       THEN COALESCE(t.order_total,0)
       ELSE 0
     END) AS total_in_invoice,
 
     SUM(CASE
       WHEN t.txn_type = 'IN'
-       AND UPPER(COALESCE(t.in_kind,'')) = 'BONUS'
+       AND UPPER(COALESCE(t.in_kind,'')) LIKE '%BONUS%'
       THEN COALESCE(t.amount,0)
       ELSE 0
     END) AS bonus_total,
@@ -251,7 +254,7 @@ $sumSql = "
     SUM(CASE
       WHEN t.txn_type = 'IN'
        AND (
-            UPPER(COALESCE(t.in_kind,'')) = 'RETURN'
+            (UPPER(COALESCE(t.in_kind,'')) LIKE '%RETURN%' OR UPPER(COALESCE(t.in_kind,'')) LIKE '%REPAY%')
             OR t.title LIKE '%Repayment%'
             OR t.title LIKE '%repayment%'
             OR t.title LIKE '%Return%'

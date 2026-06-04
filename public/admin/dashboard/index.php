@@ -33,6 +33,66 @@ function fmt_rm(float $v): string
   return $sign . 'RM ' . number_format(abs($v), 2);
 }
 
+function dashboard_table_columns(PDO $pdo, string $table): array
+{
+  static $cache = [];
+  $key = strtolower($table);
+  if (isset($cache[$key])) return $cache[$key];
+
+  $cols = [];
+  try {
+    $st = $pdo->query("DESCRIBE `$table`");
+    foreach ($st->fetchAll(PDO::FETCH_ASSOC) as $r) {
+      $field = (string)($r['Field'] ?? '');
+      if ($field !== '') $cols[$field] = true;
+    }
+  } catch (Throwable $e) {
+  }
+
+  return $cache[$key] = $cols;
+}
+
+function dashboard_bank_extra_totals(PDO $pdo, string $dateFrom, string $dateTo): array
+{
+  $cols = dashboard_table_columns($pdo, 'company_bank_txn');
+  if (!$cols || !isset($cols['txn_type'])) return ['in' => 0.0, 'out' => 0.0];
+
+  $dateExpr = isset($cols['txn_date']) ? 'DATE(t.txn_date)' : 'DATE(t.created_at)';
+  $amountExpr = isset($cols['amount_myr']) ? 'COALESCE(t.amount_myr,0)' : 'COALESCE(t.amount,0)';
+
+  $linkedWhere = [];
+  if (isset($cols['source_table'])) {
+    $linkedWhere[] = "(t.source_table IS NULL OR t.source_table = '' OR t.source_table NOT IN ('customer_txn','customer_txn_payments'))";
+  }
+  if (isset($cols['txn_id'])) {
+    $linkedWhere[] = "(t.txn_id IS NULL OR t.txn_id = 0)";
+  }
+  if (isset($cols['customer_id'])) {
+    $linkedWhere[] = "(t.customer_id IS NULL OR t.customer_id = 0)";
+  }
+
+  $extraSql = $linkedWhere ? (' AND ' . implode(' AND ', $linkedWhere)) : '';
+
+  try {
+    $st = $pdo->prepare("
+      SELECT
+        SUM(CASE WHEN t.txn_type = 'IN' THEN $amountExpr ELSE 0 END) AS bank_in,
+        SUM(CASE WHEN t.txn_type = 'OUT' THEN $amountExpr ELSE 0 END) AS bank_out
+      FROM company_bank_txn t
+      WHERE $dateExpr BETWEEN :d1 AND :d2
+      $extraSql
+    ");
+    $st->execute([':d1' => $dateFrom, ':d2' => $dateTo]);
+    $r = $st->fetch() ?: [];
+    return [
+      'in' => (float)($r['bank_in'] ?? 0),
+      'out' => (float)($r['bank_out'] ?? 0),
+    ];
+  } catch (Throwable $e) {
+    return ['in' => 0.0, 'out' => 0.0];
+  }
+}
+
 // ---- 本月范围 ----
 $today      = date('Y-m-d');
 $monthStart = date('Y-m-01');
@@ -46,7 +106,7 @@ $st = $pdo->prepare("
     SUM(CASE
           WHEN txn_type = 'IN'
            AND DATE(COALESCE(txn_date, created_at)) BETWEEN :d1 AND :d2
-           AND UPPER(COALESCE(in_kind,'')) NOT IN ('BONUS','RETURN')
+           AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%BONUS%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%RETURN%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%REPAY%'
           THEN (amount - COALESCE(allocated_amount,0))
           ELSE 0
         END) AS total_in_normal,
@@ -63,7 +123,7 @@ $st = $pdo->prepare("
     SUM(CASE
           WHEN txn_type = 'IN'
            AND DATE(COALESCE(txn_date, created_at)) BETWEEN :d1 AND :d2
-           AND UPPER(COALESCE(in_kind,'')) = 'BONUS'
+           AND UPPER(COALESCE(in_kind,'')) LIKE '%BONUS%'
           THEN (amount - COALESCE(allocated_amount,0))
           ELSE 0
         END) AS bonus_total,
@@ -72,7 +132,7 @@ $st = $pdo->prepare("
           WHEN txn_type = 'IN'
            AND DATE(COALESCE(txn_date, created_at)) BETWEEN :d1 AND :d2
            AND (
-                UPPER(COALESCE(in_kind,'')) = 'RETURN'
+                (UPPER(COALESCE(in_kind,'')) LIKE '%RETURN%' OR UPPER(COALESCE(in_kind,'')) LIKE '%REPAY%')
                 OR (
                      (COALESCE(order_total,0) = 0)
                      AND (amount > 0)
@@ -98,6 +158,9 @@ $sumMonth = $st->fetch() ?: [];
 
 $total_in_month  = (float)($sumMonth['total_in_normal'] ?? 0);
 $total_out_month = (float)($sumMonth['total_out_normal'] ?? 0);
+$bankMonthTotals = dashboard_bank_extra_totals($pdo, $monthStart, $monthEnd);
+$total_in_month += (float)$bankMonthTotals['in'];
+$total_out_month += (float)$bankMonthTotals['out'];
 
 // Pending（ALL invoice 未付）
 $pending_month = 0.0;
@@ -146,7 +209,7 @@ try {
       SUM(CASE
             WHEN txn_type = 'IN'
              AND (
-                  UPPER(COALESCE(in_kind,'')) = 'RETURN'
+                  (UPPER(COALESCE(in_kind,'')) LIKE '%RETURN%' OR UPPER(COALESCE(in_kind,'')) LIKE '%REPAY%')
                   OR (
                        (COALESCE(order_total,0) = 0)
                        AND (amount > 0)
@@ -159,7 +222,7 @@ try {
 
       SUM(CASE
             WHEN txn_type = 'IN'
-             AND UPPER(COALESCE(in_kind,'')) = 'BONUS'
+             AND UPPER(COALESCE(in_kind,'')) LIKE '%BONUS%'
             THEN (amount - COALESCE(allocated_amount,0))
             ELSE 0
           END) AS bonus_total
@@ -299,7 +362,7 @@ try {
         SUM(CASE
               WHEN txn_type='IN'
                AND DATE(COALESCE(txn_date, created_at)) BETWEEN :d1 AND :d2
-               AND UPPER(COALESCE(in_kind,'')) NOT IN ('BONUS','RETURN')
+               AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%BONUS%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%RETURN%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%REPAY%'
               THEN (amount - COALESCE(allocated_amount,0))
               ELSE 0
             END) AS in_normal,
@@ -315,8 +378,9 @@ try {
     ");
     $st->execute([':d1' => $d1, ':d2' => $d2]);
     $r = $st->fetch() ?: [];
-    $barIn[]  = (float)($r['in_normal'] ?? 0);
-    $barOut[] = (float)($r['out_normal'] ?? 0);
+    $bankMonth = dashboard_bank_extra_totals($pdo, $d1, $d2);
+    $barIn[]  = (float)($r['in_normal'] ?? 0) + (float)$bankMonth['in'];
+    $barOut[] = (float)($r['out_normal'] ?? 0) + (float)$bankMonth['out'];
   }
 } catch (Throwable $e) {
   $barLabels = [];

@@ -49,7 +49,7 @@ $currency = $customer['currency'] ?? 'MYR';
 $sumSql = "SELECT
               SUM(CASE
                     WHEN txn_type = 'IN'
-                     AND UPPER(COALESCE(in_kind,'')) NOT IN ('BONUS','RETURN')
+                     AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%BONUS%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%RETURN%' AND UPPER(COALESCE(in_kind,'')) NOT LIKE '%REPAY%'
                     THEN (amount - COALESCE(allocated_amount,0))
                     ELSE 0
                   END) AS total_in_normal,
@@ -64,7 +64,7 @@ $sumSql = "SELECT
 
               SUM(CASE
                     WHEN txn_type = 'IN'
-                     AND UPPER(COALESCE(in_kind,'')) = 'BONUS'
+                     AND UPPER(COALESCE(in_kind,'')) LIKE '%BONUS%'
                     THEN (amount - COALESCE(allocated_amount,0))
                     ELSE 0
                   END) AS bonus_total,
@@ -72,7 +72,7 @@ $sumSql = "SELECT
               SUM(CASE
                     WHEN txn_type = 'IN'
                      AND (
-                          UPPER(COALESCE(in_kind,'')) = 'RETURN'
+                          (UPPER(COALESCE(in_kind,'')) LIKE '%RETURN%' OR UPPER(COALESCE(in_kind,'')) LIKE '%REPAY%')
                           OR (
                                (COALESCE(order_total,0) = 0)
                                AND (amount > 0)

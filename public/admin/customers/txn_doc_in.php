@@ -232,27 +232,11 @@ $companyHeaderLine = trim($companyName . ($companyTaxNo !== '' ? (' ' . $company
 $companyAddress = (array)($company['address'] ?? []);
 $companyPhone = (string)($company['phone'] ?? '');
 $companyEmail = (string)($company['email'] ?? '');
-$preferredBanks = [];
-try {
-  $stBank = $pdo->query("SELECT id, bank_code, account_name, account_no, currency FROM company_bank_accounts WHERE is_active = 1 ORDER BY id ASC");
-  $allBanks = $stBank->fetchAll(PDO::FETCH_ASSOC) ?: [];
-  // 不显示 CIMB；优先显示 HONG LEONG BANK，其余显示前两条 active（排除 CIMB）
-  $pick = [];
-  foreach ($allBanks as $b) {
-    $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
-    if ($code === 'HONG LEONG BANK') $pick[] = $b;
-  }
-  if (!$pick) {
-    foreach ($allBanks as $b) {
-      $code = strtoupper(trim((string)($b['bank_code'] ?? '')));
-      if ($code === 'CIMB') continue;
-      $pick[] = $b;
-    }
-  }
-  $preferredBanks = array_slice($pick, 0, 2);
-} catch (Throwable $e) {
-  $preferredBanks = [];
-}
+$preferredBanks = [[
+  'bank_code' => 'HONG LEONG BANK',
+  'account_name' => 'VISION MIX SDN BHD',
+  'account_no' => '19400128208',
+]];
 
 $docNo = ($doc === 'DO') ? trim((string)($txn['do_number'] ?? '')) : (($doc === 'INVOICE') ? trim((string)($txn['invoice_no'] ?? '')) : '');
 // DO Number auto-generate (print-time fallback) when empty
@@ -1502,10 +1486,6 @@ $custEmail = trim((string)($customer['email'] ?? ''));
     <div>All overdue accounts will be subject to an additional charge of 1.5% per month. Payment to be made to VISION MIX SDN. BHD.</div>
   </div>
 
-  <div class="banks">
-    <div style="font-weight:800;">PREFERRED BANK</div>
-    <div class="row">BANK: HONG LEONG BANK &nbsp;|&nbsp; ACCOUNT NAME: VISION MIX SDN BHD &nbsp;|&nbsp; ACCOUNT NO.: 19400128208</div>
-  </div>
 
   <div style="display:flex; gap:18px; margin-top:10px; align-items:flex-end;">
     <?php if ($needCustomerSign): ?>
@@ -1735,11 +1715,6 @@ $custEmail = trim((string)($customer['email'] ?? ''));
           <span class="label">ACCOUNT NO.:</span> <?= h($b['account_no'] ?? '') ?>
         </div>
       <?php endforeach; ?>
-      <div style="margin-top:4px; font-size:12px;">
-        <span class="label">BANK:</span> HONG LEONG BANK &nbsp;|&nbsp;
-        <span class="label">ACCOUNT NAME:</span> VISION MIX SDN BHD &nbsp;|&nbsp;
-        <span class="label">ACCOUNT NO.:</span> 19400128208
-      </div>
     </div>
   <?php endif; ?>
 

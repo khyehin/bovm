@@ -186,7 +186,7 @@ $sql = "
             (
               CASE
                 -- INVOICE 用 order_total（没有就用 amount）
-                WHEN (UPPER(COALESCE(t.in_kind,'')) NOT IN ('BONUS','RETURN'))
+                WHEN (UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%BONUS%' AND UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%RETURN%' AND UPPER(COALESCE(t.in_kind,'')) NOT LIKE '%REPAY%')
                 THEN (CASE WHEN COALESCE(t.order_total,0)>0 THEN COALESCE(t.order_total,0) ELSE COALESCE(t.amount,0) END)
                 -- RETURN / BONUS 直接用 amount
                 ELSE COALESCE(t.amount,0)

@@ -109,7 +109,7 @@ $date_from = trim((string)($_GET['date_from'] ?? ''));
 $date_to   = trim((string)($_GET['date_to'] ?? ''));
 $date_all  = trim((string)($_GET['date_all'] ?? ''));
 
-$where = ["t.txn_type = 'IN'", "(t.in_kind = 'INVOICE' OR t.in_kind IS NULL OR t.in_kind = '')"];
+$where = ["t.txn_type = 'IN'", "(UPPER(COALESCE(t.in_kind,'')) = '' OR UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%')"];
 $params = [];
 
 // limit to category 3 customers only

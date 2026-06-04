@@ -44,7 +44,7 @@ if ($rows) {
                SUM(
                  CASE
                    WHEN t.txn_type='IN'
-                        AND UPPER(COALESCE(t.in_kind,''))='INVOICE'
+                        AND UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%'
                         AND UPPER(COALESCE(t.doc_flow_status,'')) <> 'REJECTED'
                    THEN COALESCE(t.order_total, t.amount)
                    ELSE 0
@@ -53,7 +53,7 @@ if ($rows) {
                SUM(
                  CASE
                    WHEN t.txn_type='IN'
-                        AND UPPER(COALESCE(t.in_kind,''))='INVOICE'
+                        AND UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%'
                         AND t.status <> 'CONFIRMED'
                         AND UPPER(COALESCE(t.doc_flow_status,'')) <> 'REJECTED'
                    THEN GREATEST(0, COALESCE(t.order_total, t.amount) - COALESCE(p.paid_total, 0))

@@ -102,37 +102,58 @@ if (empty($customer['currency'])) $customer['currency'] = 'MYR';
 /**
  * ✅ 统一识别 in_kind（解决 in_kind='' / title 不一致）
  */
+function normalize_in_kind_label(string $raw): string
+{
+  $raw = strtoupper(trim($raw));
+  if ($raw === '') return 'INVOICE';
+
+  $hasInvoice = (strpos($raw, 'INVOICE') !== false || preg_match('/(^|[^A-Z])INV([^A-Z]|$)/', $raw));
+  $hasReturn  = (strpos($raw, 'RETURN') !== false || strpos($raw, 'REPAY') !== false);
+  $hasBonus   = (strpos($raw, 'BONUS') !== false);
+
+  if ($hasReturn) return $hasInvoice ? 'INVOICE+RETURN' : 'RETURN';
+  if ($hasBonus) return $hasInvoice ? 'INVOICE+BONUS' : 'BONUS';
+  return 'INVOICE';
+}
+
+function in_kind_has_part(string $kind, string $part): bool
+{
+  $kind = normalize_in_kind_label($kind);
+  return strpos('+' . $kind . '+', '+' . strtoupper($part) . '+') !== false;
+}
+
 function detect_in_kind(array $r): string
 {
-  // 1) DB in_kind 优先
-  $raw = strtoupper(trim((string)($r['in_kind'] ?? '')));
+  // Financial category for balances/summaries. INVOICE can be combined with RETURN/BONUS.
+  $raw = normalize_in_kind_label((string)($r['in_kind'] ?? ''));
+  if (in_kind_has_part($raw, 'RETURN')) return 'RETURN';
+  if (in_kind_has_part($raw, 'BONUS')) return 'BONUS';
+  if (in_kind_has_part($raw, 'INVOICE')) return 'INVOICE';
 
-  // normalize 常见乱写
-  if ($raw !== '') {
-    if (strpos($raw, 'BONUS') !== false) return 'BONUS';
-    if (strpos($raw, 'RETURN') !== false) return 'RETURN';
-    if (strpos($raw, 'REPAY') !== false) return 'RETURN';
-    if (strpos($raw, 'INVOICE') !== false) return 'INVOICE';
-    if (strpos($raw, 'INV') !== false) return 'INVOICE';
-  }
-
-  // 2) title fallback（更广的关键字）
+  // title fallback（更广的关键字）
   $title = strtolower(trim((string)($r['title'] ?? '')));
 
-  // BONUS 关键字
   $bonusWords = ['bonus', 'profit', 'share', 'dividend', 'commission', 'rebate'];
   foreach ($bonusWords as $w) {
     if ($w !== '' && strpos($title, $w) !== false) return 'BONUS';
   }
 
-  // RETURN / REPAYMENT 关键字
   $returnWords = ['repayment', 're-payment', 'repay', 'return', 'capital', 'principal'];
   foreach ($returnWords as $w) {
     if ($w !== '' && strpos($title, $w) !== false) return 'RETURN';
   }
 
-  // 默认 INVOICE
   return 'INVOICE';
+}
+
+function display_in_kind_label(array $r): string
+{
+  $kind = normalize_in_kind_label((string)($r['in_kind'] ?? ''));
+  if ($kind === 'INVOICE+RETURN') return 'Invoice + Repayment';
+  if ($kind === 'INVOICE+BONUS') return 'Invoice + Bonus';
+  if ($kind === 'RETURN') return 'Repayment';
+  if ($kind === 'BONUS') return 'Bonus';
+  return 'Invoice';
 }
 
 // 载入 company_bank_accounts，Method filter 用
@@ -244,7 +265,9 @@ $sumSql = "
   SELECT
     SUM(CASE
       WHEN txn_type = 'IN'
-        AND $inKindExpr NOT IN ('BONUS','RETURN')
+        AND $inKindExpr NOT LIKE '%BONUS%'
+        AND $inKindExpr NOT LIKE '%RETURN%'
+        AND $inKindExpr NOT LIKE '%REPAY%'
       THEN (amount - $allocExpr)
       ELSE 0
     END) AS total_in_normal,
@@ -258,7 +281,7 @@ $sumSql = "
     END) AS total_out_normal,
 
     SUM(CASE
-      WHEN txn_type = 'IN' AND $inKindExpr = 'BONUS'
+      WHEN txn_type = 'IN' AND $inKindExpr LIKE '%BONUS%'
       THEN (amount - $allocExpr)
       ELSE 0
     END) AS bonus_total,
@@ -266,7 +289,7 @@ $sumSql = "
     SUM(CASE
       WHEN txn_type = 'IN'
         AND (
-          $inKindExpr = 'RETURN'
+          ($inKindExpr LIKE '%RETURN%' OR $inKindExpr LIKE '%REPAY%')
           OR (
             (COALESCE(order_total,0) = 0)
             AND (amount > 0)
@@ -909,9 +932,9 @@ include __DIR__ . '/../include/header.php';
                 $typeMain = tt('admin.customer_txn.type.in', 'IN');
 
                 if ($inKind === 'RETURN') {
-                  $typeSub = 'Repayment';
+                  $typeSub = display_in_kind_label($r);
                 } elseif ($inKind === 'BONUS') {
-                  $typeSub = 'Bonus';
+                  $typeSub = display_in_kind_label($r);
                 } elseif ($inKind === 'INVOICE') {
                   $typeSub = $canAlloc ? tt('admin.customer_txn.type.allocate', 'Allocate') : 'Invoice';
                 } else {
@@ -924,8 +947,8 @@ include __DIR__ . '/../include/header.php';
 
               $titleText = (string)($r['title'] ?? '');
               if ($titleText === '') {
-                if ($tType === 'IN' && $inKind === 'RETURN') $titleText = 'Repayment';
-                elseif ($tType === 'IN' && $inKind === 'BONUS') $titleText = 'Bonus';
+                if ($tType === 'IN' && $inKind === 'RETURN') $titleText = display_in_kind_label($r);
+                elseif ($tType === 'IN' && $inKind === 'BONUS') $titleText = display_in_kind_label($r);
                 elseif ($tType === 'IN' && $inKind === 'INVOICE') $titleText = $uiInvoiceLabel;
                 else $titleText = '-';
               }
@@ -1083,30 +1106,50 @@ include __DIR__ . '/../include/header.php';
                     $tTypeRow = strtoupper(trim((string)($r['txn_type'] ?? '')));
                     $ikRow    = detect_in_kind($r); // INVOICE / BONUS / RETURN
                     $isInInvoice = ($tTypeRow === 'IN' && $ikRow === 'INVOICE');
+                    $rowId = (int)$r['id'];
+                    $viewUrl = url('admin/customers/txn_view.php?id=' . $rowId . '&customer_id=' . $cid);
+                    $editUrl = url('admin/customers/txn_edit.php?id=' . $rowId . '&customer_id=' . $cid);
+                    $editInUrl = url('admin/customers/txn_edit_in.php?id=' . $rowId . '&customer_id=' . $cid);
+                    $quotationUrl = url('admin/customers/txn_doc_in.php?id=' . $rowId . '&customer_id=' . $cid . '&doc=QUOTATION');
+                    $invoiceUrl = url('admin/customers/txn_doc_in.php?id=' . $rowId . '&customer_id=' . $cid . '&doc=INVOICE');
+                    $doUrl = url('admin/customers/txn_doc_in.php?id=' . $rowId . '&customer_id=' . $cid . '&doc=DO');
+                    $receiptInUrl = url('admin/customers/txn_receipt_in.php?id=' . $rowId . '&customer_id=' . $cid);
                   ?>
                   <div class="actions-menu">
                     <button type="button" class="actions-menu-trigger" aria-expanded="false">⋯</button>
 
                     <div class="actions-menu-dropdown">
                       <!-- View: 直接进 QUOTATION 版单据（admin txn_doc_in，会根据 flow 决定能否看 INVOICE/DO） -->
-                      <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid . '&doc=QUOTATION')) ?>" class="actions-menu-item">
-                        <?= h(tt('admin.customer_txn.list.action_view', 'View')) ?>
+                      <a href="<?= h($viewUrl) ?>" class="actions-menu-item">
+                        <?= h(tt('admin.customer_txn.list.action_view', 'View receipt / sign')) ?>
                       </a>
+
+                      <?php if ($isInInvoice): ?>
+                        <a href="<?= h($quotationUrl) ?>" class="actions-menu-item">
+                          <?= h(tt('admin.customer_txn.list.action_quotation', 'Quotation')) ?>
+                        </a>
+                        <a href="<?= h($invoiceUrl) ?>" class="actions-menu-item">
+                          <?= h(tt('admin.customer_txn.list.action_invoice', 'Invoice')) ?>
+                        </a>
+                        <a href="<?= h($doUrl) ?>" class="actions-menu-item">
+                          <?= h(tt('admin.customer_txn.list.action_do', 'DO')) ?>
+                        </a>
+                        <a href="<?= h($receiptInUrl) ?>" class="actions-menu-item">
+                          <?= h(tt('admin.customer_txn.list.action_receipt_in', 'IN Receipt')) ?>
+                        </a>
+                      <?php endif; ?>
 
                       <!-- 普通 Edit：非 IN-INVOICE 才需要；IN-INVOICE 用下面专用的 Edit IN -->
                       <?php if (!$isInInvoice): ?>
-                      <a href="<?= h(url('admin/customers/txn_edit.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
+                      <a href="<?= h($editUrl) ?>" class="actions-menu-item">
                         <?= h(tt('admin.common.edit', 'Edit')) ?>
                       </a>
                       <?php endif; ?>
 
                       <!-- ✅ 只要是 IN invoice 都给 IN Receipt / Invoice 编辑入口 -->
                       <?php if ($isInInvoice): ?>
-                        <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>" class="actions-menu-item">
+                        <a href="<?= h($editInUrl) ?>" class="actions-menu-item">
                           <?= h(tt('admin.customer_txn.list.action_invoice_edit', 'View / edit IN invoice')) ?>
-                        </a>
-                        <a href="<?= h(url('admin/customers/txn_receipt_in.php?id=' . (int)$r['id'])) ?>" class="actions-menu-item">
-                          <?= h(tt('admin.customer_txn.list.action_receipt_in', 'IN Receipt')) ?>
                         </a>
                       <?php endif; ?>
 
