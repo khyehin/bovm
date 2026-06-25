@@ -111,6 +111,20 @@ function delete_pob_in(PDO $pdo, int $payerCid, string $marker): void {
   $cols = table_columns($pdo, 'customer_txn');
   if (!isset($cols['notes'])) return;
 
+  $st = $pdo->prepare("SELECT id FROM customer_txn
+          WHERE txn_type='IN'
+            AND customer_id = :cid
+            AND notes LIKE :mk");
+  $st->execute([
+    ':cid' => $payerCid,
+    ':mk'  => '%' . $marker . '%',
+  ]);
+  $ids = array_values(array_filter(array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN))));
+  if ($ids) {
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    try { $pdo->prepare("DELETE FROM company_bank_txn WHERE txn_id IN ($in)")->execute($ids); } catch (Throwable $e) {}
+  }
+
   $sql = "DELETE FROM customer_txn
           WHERE txn_type='IN'
             AND customer_id = :cid
@@ -118,6 +132,40 @@ function delete_pob_in(PDO $pdo, int $payerCid, string $marker): void {
   $pdo->prepare($sql)->execute([
     ':cid' => $payerCid,
     ':mk'  => '%' . $marker . '%',
+  ]);
+}
+
+function sync_pob_in_bank_txn_view(PDO $pdo, int $inId, int $payerCid, array $outTxn, array $customerC): void {
+  if ($inId <= 0) return;
+
+  try { $pdo->prepare("DELETE FROM company_bank_txn WHERE txn_id = :tid")->execute([':tid' => $inId]); } catch (Throwable $e) {}
+
+  $bankId = (int)($outTxn['pay_source_bank_account_id'] ?? 0);
+  $amount = (float)($outTxn['amount'] ?? 0);
+  if ($bankId <= 0 || $amount <= 0) return;
+
+  $currency = strtoupper((string)($outTxn['currency'] ?? 'MYR'));
+  $fx = (float)($outTxn['fx_rate'] ?? 0);
+  $rateToMyr = ($currency === 'MYR') ? 1 : ($fx > 0 ? $fx : 0);
+  $amountMyr = $rateToMyr > 0 ? $amount * $rateToMyr : 0;
+
+  insert_row($pdo, 'company_bank_txn', [
+    'txn_id'       => $inId,
+    'bank_id'      => $bankId,
+    'txn_date'     => (string)($outTxn['txn_date'] ?? date('Y-m-d')),
+    'txn_type'     => 'IN',
+    'ref_no'       => trim((string)($outTxn['ref_no'] ?? 'POB-IN-' . $inId)),
+    'description'  => 'From paying customer for ' . trim((string)($customerC['name'] ?? 'Customer')),
+    'currency'     => $currency,
+    'amount'       => $amount,
+    'rate_to_myr'  => $rateToMyr,
+    'amount_myr'   => $amountMyr,
+    'customer_id'  => $payerCid,
+    'status'       => 'CONFIRMED',
+    'source_table' => 'customer_txn',
+    'source_id'    => $inId,
+    'created_at'   => date('Y-m-d H:i:s'),
+    'updated_at'   => date('Y-m-d H:i:s'),
   ]);
 }
 
@@ -155,6 +203,8 @@ function sync_pob_in_from_out(PDO $pdo, array $outTxn, array $customerC): void {
 
   $amount = (float)($outTxn['amount'] ?? 0);
   if ($amount <= 0) return;
+  $method = strtoupper(trim((string)($outTxn['pay_source_method'] ?? 'OTHER')));
+  if (!in_array($method, ['CASH', 'BANK', 'USDT', 'OTHER'], true)) $method = 'OTHER';
 
   $txnDate = (string)($outTxn['txn_date'] ?? date('Y-m-d'));
   $cName   = (string)($customerC['name'] ?? 'Customer');
@@ -174,14 +224,17 @@ function sync_pob_in_from_out(PDO $pdo, array $outTxn, array $customerC): void {
     'allocated_amount' => 0,
     'order_total'      => 0,
 
-    'status' => $status,
+    // The paying customer has already transferred this amount to us.
+    'status' => 'CONFIRMED',
 
     'is_contra' => 0,
 
-    'method'                 => 'CUSTOMER',
+    'method'                 => $method,
     'pay_source_type'        => 'CUSTOMER',
+    'pay_source_method'      => $method,
+    'pay_source_bank_account_id' => (int)($outTxn['pay_source_bank_account_id'] ?? 0) ?: null,
     'pay_source_customer_id' => null,
-    'bank_account_id'        => null,
+    'bank_account_id'        => (int)($outTxn['pay_source_bank_account_id'] ?? 0) ?: null,
 
     'currency' => $outTxn['currency'] ?? null,
     'fx_rate'  => $outTxn['fx_rate'] ?? null,
@@ -193,11 +246,13 @@ function sync_pob_in_from_out(PDO $pdo, array $outTxn, array $customerC): void {
 
   $existing = find_pob_in($pdo, $payerCid, $marker);
   if ($existing) {
-    update_row($pdo, 'customer_txn', (int)$existing['id'], $fields);
+    $inId = (int)$existing['id'];
+    update_row($pdo, 'customer_txn', $inId, $fields);
   } else {
     $fields['created_at'] = date('Y-m-d H:i:s');
-    insert_row($pdo, 'customer_txn', $fields);
+    $inId = insert_row($pdo, 'customer_txn', $fields);
   }
+  sync_pob_in_bank_txn_view($pdo, $inId, $payerCid, $outTxn, $customerC);
 }
 
 function upload_href(?string $fp): string {
@@ -313,10 +368,12 @@ $isIn     = (($txn['txn_type'] ?? '') === 'IN');
 $isOut    = (($txn['txn_type'] ?? '') === 'OUT');
 $isContra = ((int)($txn['is_contra'] ?? 0) === 1);
 
-$inKind = strtoupper(trim((string)($txn['in_kind'] ?? 'INVOICE')));
-if (!in_array($inKind, ['INVOICE', 'RETURN', 'BONUS'], true)) $inKind = 'INVOICE';
+$inKindRaw = strtoupper(trim((string)($txn['in_kind'] ?? 'INVOICE')));
+$isInvoiceKind = ($inKindRaw === '' || strpos($inKindRaw, 'INVOICE') !== false || preg_match('/(^|[^A-Z])INV([^A-Z]|$)/', $inKindRaw));
+$inKind = $inKindRaw;
+if (!in_array($inKind, ['INVOICE', 'RETURN', 'BONUS', 'INVOICE+RETURN', 'INVOICE+BONUS'], true)) $inKind = 'INVOICE';
 
-$isInInvoice    = ($isIn && $inKind === 'INVOICE');
+$isInInvoice    = ($isIn && $isInvoiceKind);
 $isInNonInvoice = ($isIn && !$isInInvoice);
 
 /* ✅ multi receipt mode: IN non-invoice and no payment_id => show all payment receipts */

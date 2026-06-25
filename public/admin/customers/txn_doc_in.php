@@ -44,6 +44,16 @@ function parse_unit_marker(string $desc): array
   return ['', $desc];
 }
 
+function format_qty_with_unit(float $qty, string $unitLabel = ''): string
+{
+  if (abs($qty) < 0.0001) return '';
+  $qtyText = (abs($qty - round($qty)) < 0.0001)
+    ? (string)(int)round($qty)
+    : rtrim(rtrim(number_format($qty, 4, '.', ''), '0'), '.');
+  $unitLabel = trim($unitLabel);
+  return trim($qtyText . ($unitLabel !== '' ? (' ' . $unitLabel) : ''));
+}
+
 function table_columns(PDO $pdo, string $table): array
 {
   static $cache = [];
@@ -840,9 +850,9 @@ if (!$allowFromPortal) {
     }
     body.vm-print-ready #printPages {
       display: block !important;
-      position: fixed !important;
-      left: 0 !important;
-      top: 0 !important;
+      position: static !important;
+      left: auto !important;
+      top: auto !important;
       width: 100% !important;
     }
 
@@ -1354,7 +1364,7 @@ $company1EditUrl = url('user/company1/quotation_edit.php?id=' . $id . '&customer
   <div class="no-print">
     <a href="<?= h(url('admin/customers/txn_edit_in.php?id=' . $id . '&customer_id=' . $cid)) ?>" class="btn btn-light">← Back</a>
     <button type="button" class="btn btn-primary" onclick="vmPrepareAndPrint();">Print / PDF</button>
-    <?php if (!$hasPaymentStarted): ?>
+    <?php if ($doc === 'QUOTATION'): ?>
       <a href="<?= h($adminEditUrl) ?>" class="btn btn-light">Edit Quotation</a>
     <?php endif; ?>
     <div class="sig-controls" style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -1609,12 +1619,14 @@ $custEmail = trim((string)($customer['email'] ?? ''));
           foreach ($lines as $i => $line) {
             $no = $i + 1;
             $desc = (string)($line['description'] ?? '');
+            [$unitLabel, $descShown] = parse_unit_marker($desc);
             $qty = (float)($line['quantity'] ?? 1);
+            $qtyShown = format_qty_with_unit($qty, $unitLabel);
         ?>
             <tr>
               <td><?= (int)$no ?></td>
-              <td><?= h($desc) ?></td>
-              <td class="col-qty"><?= h($qty) ?></td>
+              <td><?= h($descShown) ?></td>
+              <td class="col-qty"><?= $qtyShown !== '' ? h($qtyShown) : '&nbsp;' ?></td>
             </tr>
           <?php
           }

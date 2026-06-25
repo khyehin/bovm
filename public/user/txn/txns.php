@@ -14,6 +14,12 @@ if (($u['role'] ?? '') !== 'CUSTOMER') {
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+    app_ensure_customer_currency_schema($pdo);
+}
+$hasPaySourceBank = function_exists('app_table_has_column')
+    ? app_table_has_column($pdo, 'customer_txn', 'pay_source_bank_account_id')
+    : false;
 
 if (!function_exists('h')) {
     function h($v): string {
@@ -131,6 +137,7 @@ if ($onlyContra) {
         OR
         (txn_type = 'OUT' AND (
             customer_txn.bank_account_id = :bank_filter_id
+            " . ($hasPaySourceBank ? "OR COALESCE(customer_txn.pay_source_bank_account_id,0) = :bank_filter_id" : "") . "
             OR EXISTS (
                 SELECT 1
                 FROM customer_txn_payments p2
@@ -392,14 +399,23 @@ include __DIR__ . '/../include/header.php';
                   }
               }
 
-              if (!$bankLabels) {
-                  $m = strtoupper((string)($r['method'] ?? ''));
-                  $methodLabel = $m !== '' ? $m : '-';
-              }
           }
 
           $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
-          if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
+          if ($adminType === 'OUT' && strtoupper((string)($r['pay_source_type'] ?? '')) === 'CUSTOMER') {
+              $inMethod = strtoupper(trim((string)($r['pay_source_method'] ?? 'OTHER')));
+              if ($inMethod === '') $inMethod = 'OTHER';
+              $inBankId = (int)($r['pay_source_bank_account_id'] ?? 0);
+              $inBank = ($inBankId > 0 && isset($bankMap[$inBankId])) ? $bankMap[$inBankId] : '';
+              $outMethod = strtoupper(trim((string)($r['method'] ?? 'CASH'))) ?: 'CASH';
+              $methodLabel = 'IN: ' . $inMethod . ($inBank !== '' ? ' -> ' . $inBank : '');
+              $methodLabel .= ' / OUT: ' . $outMethod . ($bankLabels ? ' -> ' . implode(' / ', $bankLabels) : '');
+          } elseif ($bankLabels) {
+              $methodLabel = implode(' / ', $bankLabels);
+          } elseif ($adminType === 'OUT') {
+              $m = strtoupper((string)($r['method'] ?? ''));
+              $methodLabel = $m !== '' ? $m : '-';
+          }
 
           // Pending：只有 admin IN + INVOICE，且流程未 REJECTED
           $pendingVal = 0.0;

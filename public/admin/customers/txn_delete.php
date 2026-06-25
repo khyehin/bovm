@@ -22,6 +22,10 @@ if (!function_exists('h')) {
 
 function back_url(int $cid): string
 {
+    $back = trim((string)($_GET['back'] ?? ''));
+    if ($back !== '' && strpos($back, "\n") === false && strpos($back, "\r") === false) {
+        return $back;
+    }
     if (!empty($_SERVER['HTTP_REFERER'])) return $_SERVER['HTTP_REFERER'];
     return url('admin/customers/txn_list.php?customer_id=' . $cid);
 }
@@ -85,7 +89,7 @@ $isContra  = (int)($txn['is_contra'] ?? 0) === 1;
 $allocated = (float)($txn['allocated_amount'] ?? 0);
 
 /* ===== blocks ===== */
-if ($status === 'CONFIRMED' || $isContra) {
+if ($isContra) {
     header('Location: ' . back_url($cid));
     exit;
 }
@@ -99,6 +103,14 @@ try {
     $pdo->beginTransaction();
 
     // 1) delete attachments rows + unlink files
+    if (table_exists($pdo, 'customer_txn_attachments')) {
+        $pdo->prepare("DELETE FROM customer_txn_attachments WHERE customer_txn_id = :tid")->execute([':tid' => $id]);
+    }
+
+    if (table_exists($pdo, 'customer_txn_lines')) {
+        $pdo->prepare("DELETE FROM customer_txn_lines WHERE customer_txn_id = :tid")->execute([':tid' => $id]);
+    }
+
     if (table_exists($pdo, 'customer_txn_files')) {
         $stFiles = $pdo->prepare("SELECT file_path FROM customer_txn_files WHERE txn_id = :tid");
         $stFiles->execute([':tid' => $id]);
@@ -112,6 +124,11 @@ try {
             $full = __DIR__ . '/../../../' . ltrim($fp, '/');
             if (is_file($full)) @unlink($full);
         }
+    }
+
+    if (table_exists($pdo, 'customer_txn_allocations')) {
+        $pdo->prepare("DELETE FROM customer_txn_allocations WHERE source_txn_id = :tid OR target_txn_id = :tid")
+            ->execute([':tid' => $id]);
     }
 
     // 2) if IN: delete payments + related bank ledger
@@ -155,14 +172,28 @@ try {
             }
         }
 
-        // finally delete payments
+        // finally delete payment attachments and payments
+        if (table_exists($pdo, 'customer_txn_payment_attachments')) {
+            $pdo->prepare("
+                DELETE pa FROM customer_txn_payment_attachments pa
+                JOIN customer_txn_payments p ON p.id = pa.payment_id
+                WHERE p.customer_txn_id = :tid
+            ")->execute([':tid' => $id]);
+        }
+
         $pdo->prepare("DELETE FROM customer_txn_payments WHERE customer_txn_id = :tid")->execute([':tid' => $id]);
     }
 
-    // 3) if OUT: delete related bank ledger (最准：txn_id)
-    if ($txnType === 'OUT' && table_exists($pdo, 'company_bank_txn')) {
+    // 3) delete related bank ledger
+    if (table_exists($pdo, 'company_bank_txn')) {
         $pdo->prepare("DELETE FROM company_bank_txn WHERE txn_id = :tid")
             ->execute([':tid' => $id]);
+
+        $colsBank = table_columns($pdo, 'company_bank_txn');
+        if (isset($colsBank['source_table'], $colsBank['source_id'])) {
+            $pdo->prepare("DELETE FROM company_bank_txn WHERE source_table='customer_txn' AND source_id = :tid")
+                ->execute([':tid' => $id]);
+        }
     }
 
     // 4) delete main txn
@@ -171,7 +202,7 @@ try {
 
     $pdo->commit();
 
-    header('Location: ' . url('admin/customers/txn_list.php?customer_id=' . $cid . '&ok=deleted'));
+    header('Location: ' . back_url($cid));
     exit;
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();

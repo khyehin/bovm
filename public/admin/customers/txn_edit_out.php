@@ -92,6 +92,22 @@ function update_row(PDO $pdo, string $table, int $id, array $fields, string $pk 
   $st->execute($params);
 }
 
+function ensure_pob_out_schema(PDO $pdo): void {
+  try {
+    $st = $pdo->query("SHOW COLUMNS FROM customer_txn LIKE 'pay_source_method'");
+    if (!$st->fetch()) {
+      $pdo->exec("ALTER TABLE customer_txn ADD COLUMN pay_source_method varchar(20) DEFAULT NULL AFTER pay_source_customer_id");
+    }
+  } catch (Throwable $e) {}
+
+  try {
+    $st = $pdo->query("SHOW COLUMNS FROM customer_txn LIKE 'pay_source_bank_account_id'");
+    if (!$st->fetch()) {
+      $pdo->exec("ALTER TABLE customer_txn ADD COLUMN pay_source_bank_account_id int(10) unsigned DEFAULT NULL AFTER pay_source_method");
+    }
+  } catch (Throwable $e) {}
+}
+
 /* ===========================
    attachments
 =========================== */
@@ -122,12 +138,57 @@ function delete_pob_in_by_marker(PDO $pdo, string $marker, ?int $customerId = nu
   if (isset($cols['txn_type'])) $where[] = "txn_type = 'IN'";
   if ($customerId && isset($cols['customer_id'])) $where[] = "customer_id = :cid";
 
-  $sql = "DELETE FROM customer_txn WHERE " . implode(' AND ', $where);
-
   $params = [':mk' => '%' . $marker . '%'];
   if ($customerId && isset($cols['customer_id'])) $params[':cid'] = $customerId;
 
+  $st = $pdo->prepare("SELECT id FROM customer_txn WHERE " . implode(' AND ', $where));
+  $st->execute($params);
+  $ids = array_values(array_filter(array_map('intval', $st->fetchAll(PDO::FETCH_COLUMN))));
+  if ($ids) {
+    $in = implode(',', array_fill(0, count($ids), '?'));
+    try { $pdo->prepare("DELETE FROM company_bank_txn WHERE txn_id IN ($in)")->execute($ids); } catch (Throwable $e) {}
+  }
+
+  $sql = "DELETE FROM customer_txn WHERE " . implode(' AND ', $where);
   $pdo->prepare($sql)->execute($params);
+}
+
+function sync_pob_in_bank_txn(PDO $pdo, int $inId, int $payerCid, array $outData, array $customerC): void {
+  if ($inId <= 0) return;
+
+  try { $pdo->prepare("DELETE FROM company_bank_txn WHERE txn_id = :tid")->execute([':tid' => $inId]); } catch (Throwable $e) {}
+
+  $bankId = (int)($outData['pay_source_bank_account_id'] ?? 0);
+  $amount = (float)($outData['amount'] ?? 0);
+  $status = strtoupper((string)($outData['status'] ?? 'DRAFT'));
+  if ($bankId <= 0 || $amount <= 0 || !in_array($status, ['SENT', 'CONFIRMED'], true)) return;
+
+  $currency = strtoupper((string)($outData['currency'] ?? 'MYR'));
+  $fx = (float)($outData['fx_rate'] ?? 0);
+  $rateToMyr = ($currency === 'MYR') ? 1 : ($fx > 0 ? $fx : 0);
+  $amountMyr = $rateToMyr > 0 ? $amount * $rateToMyr : 0;
+  $txnDate = (string)($outData['txn_date'] ?? date('Y-m-d'));
+  $refNo = trim((string)($outData['ref_no'] ?? 'POB-IN-' . $inId));
+  $custName = trim((string)($customerC['name'] ?? 'Customer'));
+
+  insert_row($pdo, 'company_bank_txn', [
+    'txn_id'       => $inId,
+    'bank_id'      => $bankId,
+    'txn_date'     => $txnDate,
+    'txn_type'     => 'IN',
+    'ref_no'       => $refNo,
+    'description'  => 'From paying customer for ' . $custName,
+    'currency'     => $currency,
+    'amount'       => $amount,
+    'rate_to_myr'  => $rateToMyr,
+    'amount_myr'   => $amountMyr,
+    'customer_id'  => $payerCid,
+    'status'       => 'CONFIRMED',
+    'source_table' => 'customer_txn',
+    'source_id'    => $inId,
+    'created_at'   => date('Y-m-d H:i:s'),
+    'updated_at'   => date('Y-m-d H:i:s'),
+  ]);
 }
 
 function sync_pob_in_repayment(PDO $pdo, int $outId, array $outData, array $customerC): void {
@@ -137,6 +198,8 @@ function sync_pob_in_repayment(PDO $pdo, int $outId, array $outData, array $cust
   $payerCid = (int)($outData['pay_source_customer_id'] ?? 0); // B
   $amount   = (float)($outData['amount'] ?? 0);
   $status   = strtoupper((string)($outData['status'] ?? 'DRAFT'));
+  $method   = strtoupper(trim((string)($outData['pay_source_method'] ?? 'OTHER')));
+  if (!in_array($method, ['CASH', 'BANK', 'USDT', 'OTHER'], true)) $method = 'OTHER';
 
   if ($pst !== 'CUSTOMER') return;
   if ($payerCid <= 0 || $amount <= 0) return;
@@ -152,7 +215,8 @@ function sync_pob_in_repayment(PDO $pdo, int $outId, array $outData, array $cust
   $txnDate = (string)($outData['txn_date'] ?? date('Y-m-d'));
   $cName   = (string)($customerC['name'] ?? 'Customer');
 
-  $inStatus = ($status === 'CONFIRMED') ? 'CONFIRMED' : 'SENT';
+  // The paying customer has already transferred this amount to us.
+  $inStatus = 'CONFIRMED';
 
   $fields = [
     'customer_id' => $payerCid,
@@ -170,14 +234,19 @@ function sync_pob_in_repayment(PDO $pdo, int $outId, array $outData, array $cust
 
     'is_contra' => 0,
 
-    // UI / legacy columns
-    'method'             => 'CUSTOMER',
+    // A customer paid us using this method.
+    'method'             => $method,
+    'pay_source_type'    => 'CUSTOMER',
+    'pay_source_method'  => $method,
+    'pay_source_bank_account_id' => (int)($outData['pay_source_bank_account_id'] ?? 0) ?: null,
+    'bank_account_id'    => (int)($outData['pay_source_bank_account_id'] ?? 0) ?: null,
     'require_signature'  => 0,
     'sign_receive'       => 0,
     'sign_payer'         => 0,
   ];
 
-  insert_row($pdo, 'customer_txn', $fields);
+  $inId = insert_row($pdo, 'customer_txn', $fields);
+  sync_pob_in_bank_txn($pdo, $inId, $payerCid, $outData, $customerC);
 }
 
 /* =========================================================
@@ -203,7 +272,6 @@ function delete_company_bank_txn_for_out(PDO $pdo, int $outId): void {
 function sync_company_bank_txn_for_out(PDO $pdo, int $outId, array $outData, array $customer): void {
   if ($outId <= 0) return;
 
-  $paySource = strtoupper((string)($outData['pay_source_type'] ?? 'BANK'));
   $status    = strtoupper((string)($outData['status'] ?? 'DRAFT'));
   $bankId    = (int)($outData['bank_account_id'] ?? 0);
   $amount    = (float)($outData['amount'] ?? 0);
@@ -211,13 +279,12 @@ function sync_company_bank_txn_for_out(PDO $pdo, int $outId, array $outData, arr
   $fx        = (float)($outData['fx_rate'] ?? 0);
   $txnDate   = (string)($outData['txn_date'] ?? date('Y-m-d'));
 
-  // 只处理 BANK + SENT/CONFIRMED
-  if ($paySource !== 'BANK') return;
-  if ($bankId <= 0 || $amount <= 0) return;
-  if (!in_array($status, ['SENT','CONFIRMED'], true)) return;
-
   // 先删旧
   delete_company_bank_txn_for_out($pdo, $outId);
+
+  // Bank/cash account is optional when another customer pays on behalf.
+  if ($bankId <= 0 || $amount <= 0) return;
+  if (!in_array($status, ['SENT','CONFIRMED'], true)) return;
 
   // MYR conversion
   if ($currency === 'MYR') {
@@ -304,6 +371,8 @@ function sync_company_bank_txn_for_out(PDO $pdo, int $outId, array $outData, arr
 /* ===========================
    data loading
 =========================== */
+ensure_pob_out_schema($pdo);
+
 $payer_companies = [];
 $payer_staff     = [];
 
@@ -347,6 +416,8 @@ try {
 $colsTxn = table_columns($pdo, 'customer_txn');
 $hasSignReceive = isset($colsTxn['sign_receive']);
 $hasSignPayer   = isset($colsTxn['sign_payer']);
+$hasPaySourceMethod = isset($colsTxn['pay_source_method']);
+$hasPaySourceBank   = isset($colsTxn['pay_source_bank_account_id']);
 
 $id          = (int)($_GET['id'] ?? 0);
 $customer_id = (int)($_GET['customer_id'] ?? 0);
@@ -438,10 +509,12 @@ $data = [
   'bank_account_id'        => null,
   'pay_source_type'        => 'BANK',     // BANK / CUSTOMER
   'pay_source_customer_id' => null,       // B
+  'pay_source_method'      => 'OTHER',
+  'pay_source_bank_account_id' => null,
   'txn_date'               => date('Y-m-d'),
   'txn_type'               => 'OUT',
   'out_kind'               => 'NORMAL',   // NORMAL / LOAN
-  'method'                 => 'BANK',     // ✅ no user input anymore
+  'method'                 => 'CASH',
   'currency'               => $baseCurrency,
   'fx_rate'                => null,
   'amount'                 => '0.00',
@@ -475,6 +548,8 @@ if (!$isNew && $txnRow) {
   $data['out_kind']               = strtoupper($txnRow['out_kind'] ?? 'NORMAL');
   $data['pay_source_type']        = strtoupper((string)($txnRow['pay_source_type'] ?? 'BANK'));
   $data['pay_source_customer_id'] = isset($txnRow['pay_source_customer_id']) ? (int)$txnRow['pay_source_customer_id'] : null;
+  $data['pay_source_method']      = strtoupper((string)($txnRow['pay_source_method'] ?? 'OTHER'));
+  $data['pay_source_bank_account_id'] = isset($txnRow['pay_source_bank_account_id']) ? (int)$txnRow['pay_source_bank_account_id'] : null;
 
   if ($hasSignReceive) $data['sign_receive'] = (int)($txnRow['sign_receive'] ?? 0);
   if ($hasSignPayer)   $data['sign_payer']   = (int)($txnRow['sign_payer'] ?? 0);
@@ -516,14 +591,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     : null;
   $data['pay_source_customer_id'] = ($paySourceType === 'CUSTOMER') ? ($paySourceCustomerId ?: null) : null;
 
+  $paySourceMethod = strtoupper(trim((string)($_POST['pay_source_method'] ?? ($data['pay_source_method'] ?? 'OTHER'))));
+  if (!in_array($paySourceMethod, ['CASH', 'BANK', 'USDT', 'OTHER'], true)) $paySourceMethod = 'OTHER';
+  $data['pay_source_method'] = ($paySourceType === 'CUSTOMER') ? $paySourceMethod : null;
+
+  $paySourceBankAccountId = (isset($_POST['pay_source_bank_account_id']) && $_POST['pay_source_bank_account_id'] !== '')
+    ? (int)$_POST['pay_source_bank_account_id']
+    : null;
+  $data['pay_source_bank_account_id'] = ($paySourceType === 'CUSTOMER') ? ($paySourceBankAccountId ?: null) : null;
+
   // bank
   $bankAccountId = (isset($_POST['bank_account_id']) && $_POST['bank_account_id'] !== '')
     ? (int)$_POST['bank_account_id']
     : null;
 
   if ($paySourceType === 'CUSTOMER') {
-    $bankAccountId = null;
-    $data['method'] = 'CUSTOMER'; // ✅ no UI
+    $method = strtoupper(trim((string)($_POST['method'] ?? ($data['method'] ?? 'CASH'))));
+    $data['method'] = in_array($method, ['CASH', 'BANK', 'USDT', 'OTHER'], true) ? $method : 'CASH';
   } else {
     $data['method'] = 'BANK';     // ✅ no UI
   }
@@ -533,8 +617,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
   $postedCurrency = strtoupper(trim((string)($_POST['currency'] ?? $data['currency'])));
   if ($postedCurrency === '') $postedCurrency = $baseCurrency;
 
-  if ($paySourceType === 'BANK' && $bankAccountId) {
+  if ($bankAccountId) {
     $bankCur = $bankCurrencyById[$bankAccountId] ?? '';
+    $data['currency'] = ($bankCur !== '') ? $bankCur : $postedCurrency;
+  } elseif ($data['pay_source_bank_account_id']) {
+    $bankCur = $bankCurrencyById[(int)$data['pay_source_bank_account_id']] ?? '';
     $data['currency'] = ($bankCur !== '') ? $bankCur : $postedCurrency;
   } else {
     $data['currency'] = $postedCurrency;
@@ -586,7 +673,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       $errors['pay_source_customer_id'] = t('admin.customer_txn.error.paying_customer_same', [], 'Paying customer cannot be the same as the counterparty.');
     }
   } else {
-    // BANK: must select bank account (otherwise cannot hit bank ledger)
+    // BANK source: must select bank account (otherwise cannot hit bank ledger)
     if (!$data['bank_account_id']) {
       $errors['bank_account_id'] = t('admin.customer_txn.error.bank_required', [], 'Bank / cash account is required.');
     }
@@ -743,6 +830,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             bank_account_id,
             pay_source_type,
             pay_source_customer_id,
+            " . ($hasPaySourceMethod ? "pay_source_method," : "") . "
+            " . ($hasPaySourceBank ? "pay_source_bank_account_id," : "") . "
             txn_date,
             txn_type,
             out_kind,
@@ -775,6 +864,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             :bank_account_id,
             :pay_source_type,
             :pay_source_customer_id,
+            " . ($hasPaySourceMethod ? ":pay_source_method," : "") . "
+            " . ($hasPaySourceBank ? ":pay_source_bank_account_id," : "") . "
             :txn_date,
             'OUT',
             :out_kind,
@@ -807,6 +898,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           ':bank_account_id'        => $data['bank_account_id'],
           ':pay_source_type'        => $data['pay_source_type'],
           ':pay_source_customer_id' => $data['pay_source_customer_id'],
+          ':pay_source_method'      => $data['pay_source_method'],
+          ':pay_source_bank_account_id' => $data['pay_source_bank_account_id'],
           ':txn_date'               => $data['txn_date'],
           ':out_kind'               => $data['out_kind'],
           ':method'                 => $data['method'], // ✅ no UI
@@ -829,12 +922,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         if ($hasSignReceive) $params[':sign_receive'] = (int)($data['sign_receive'] ?? 0);
         if ($hasSignPayer)   $params[':sign_payer']   = (int)($data['sign_payer'] ?? 0);
+        if (!$hasPaySourceMethod) unset($params[':pay_source_method']);
+        if (!$hasPaySourceBank) unset($params[':pay_source_bank_account_id']);
 
       } else {
         $sql = "UPDATE customer_txn SET
             bank_account_id        = :bank_account_id,
             pay_source_type        = :pay_source_type,
             pay_source_customer_id = :pay_source_customer_id,
+            " . ($hasPaySourceMethod ? "pay_source_method = :pay_source_method," : "") . "
+            " . ($hasPaySourceBank ? "pay_source_bank_account_id = :pay_source_bank_account_id," : "") . "
             txn_date               = :txn_date,
             out_kind               = :out_kind,
             method                 = :method,
@@ -863,6 +960,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
           ':bank_account_id'        => $data['bank_account_id'],
           ':pay_source_type'        => $data['pay_source_type'],
           ':pay_source_customer_id' => $data['pay_source_customer_id'],
+          ':pay_source_method'      => $data['pay_source_method'],
+          ':pay_source_bank_account_id' => $data['pay_source_bank_account_id'],
           ':txn_date'               => $data['txn_date'],
           ':out_kind'               => $data['out_kind'],
           ':method'                 => $data['method'], // ✅ no UI
@@ -886,6 +985,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         if ($hasSignReceive) $params[':sign_receive'] = (int)($data['sign_receive'] ?? 0);
         if ($hasSignPayer)   $params[':sign_payer']   = (int)($data['sign_payer'] ?? 0);
+        if (!$hasPaySourceMethod) unset($params[':pay_source_method']);
+        if (!$hasPaySourceBank) unset($params[':pay_source_bank_account_id']);
       }
 
       $st = $pdo->prepare($sql);
@@ -1064,8 +1165,73 @@ $uploadBaseUrl = (defined('BASE_URL') ? rtrim((string)BASE_URL, '/') : '') . '/.
               <?php endif; ?>
             </div>
 
+            <div class="form-group" id="pay_source_method_wrap" style="display:none;">
+              <label class="field-label"><?= h(t('admin.customer_txn.pay_source.in_method', [], 'Paying customer IN method')) ?></label>
+              <select name="pay_source_method" id="pay_source_method" class="form-control">
+                <?php
+                  $paySourceMethodNow = strtoupper((string)($data['pay_source_method'] ?? 'OTHER'));
+                  if (!in_array($paySourceMethodNow, ['CASH','BANK','USDT','OTHER'], true)) $paySourceMethodNow = 'OTHER';
+                ?>
+                <option value="CASH" <?= $paySourceMethodNow === 'CASH' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.cash', [], 'Cash')) ?></option>
+                <option value="BANK" <?= $paySourceMethodNow === 'BANK' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.bank', [], 'Bank')) ?></option>
+                <option value="USDT" <?= $paySourceMethodNow === 'USDT' ? 'selected' : '' ?>>USDT</option>
+                <option value="OTHER" <?= $paySourceMethodNow === 'OTHER' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.other', [], 'Other')) ?></option>
+              </select>
+              <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+                <?= h(t('admin.customer_txn.pay_source.in_method_help', [], 'How the paying customer transfers money to us.')) ?>
+              </div>
+            </div>
+
+            <div class="form-group" id="pay_source_bank_wrap" style="display:none;">
+              <label class="field-label"><?= h(t('admin.customer_txn.pay_source.in_bank', [], 'Money IN to our bank / cash account')) ?></label>
+              <select name="pay_source_bank_account_id" id="pay_source_bank_account_id" class="form-control">
+                <option value=""><?= h(t('admin.customer_txn.field.bank_placeholder_optional', [], '— Optional —')) ?></option>
+                <?php foreach ($bankAccounts as $ba): ?>
+                  <?php
+                    $baId        = (int)($ba['id'] ?? 0);
+                    $bankCode    = trim((string)($ba['bank_code']     ?? ''));
+                    $accountName = trim((string)($ba['account_name']  ?? ''));
+                    $accNo       = trim((string)($ba['account_no']    ?? ''));
+                    $accCur      = strtoupper(trim((string)($ba['currency'] ?? '')));
+                    $parts = [];
+                    if ($bankCode !== '') $parts[] = $bankCode;
+                    if ($accountName !== '') $parts[] = $accountName;
+                    if ($accNo !== '') $parts[] = $accNo;
+                    $label = implode(' · ', $parts);
+                    if ($accCur !== '') $label .= $label !== '' ? " [{$accCur}]" : "[{$accCur}]";
+                    if ($label === '') $label = 'Account #' . $baId;
+                  ?>
+                  <option value="<?= $baId ?>"
+                          data-currency="<?= h($accCur) ?>"
+                          <?= ((int)($data['pay_source_bank_account_id'] ?? 0) === $baId) ? 'selected' : '' ?>>
+                    <?= h($label) ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+              <div style="font-size:11px;color:#6b7280;margin-top:2px;">
+                <?= h(t('admin.customer_txn.pay_source.in_bank_help', [], 'This is the account receiving money from the paying customer.')) ?>
+              </div>
+            </div>
+
+            <div class="form-group" id="out_method_wrap" style="display:none;">
+              <label class="field-label"><?= h(t('admin.customer_txn.out.method', [], 'OUT method to this customer')) ?></label>
+              <select name="method" id="out_method" class="form-control">
+                <?php
+                  $outMethodNow = strtoupper((string)($data['method'] ?? 'CASH'));
+                  if (!in_array($outMethodNow, ['CASH','BANK','USDT','OTHER'], true)) $outMethodNow = 'CASH';
+                ?>
+                <option value="CASH" <?= $outMethodNow === 'CASH' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.cash', [], 'Cash')) ?></option>
+                <option value="BANK" <?= $outMethodNow === 'BANK' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.bank', [], 'Bank')) ?></option>
+                <option value="USDT" <?= $outMethodNow === 'USDT' ? 'selected' : '' ?>>USDT</option>
+                <option value="OTHER" <?= $outMethodNow === 'OTHER' ? 'selected' : '' ?>><?= h(t('admin.customer_txn.method.other', [], 'Other')) ?></option>
+              </select>
+            </div>
+
             <div class="form-group" id="bank_block_wrap">
-              <label class="field-label"><?= h(t('admin.customer_txn.field.bank_account', [], 'Bank / cash account')) ?> <span class="field-required">*</span></label>
+              <label class="field-label">
+                <?= h(t('admin.customer_txn.out.bank_account', [], 'OUT bank / cash account')) ?>
+                <span class="field-required" id="bank_required_mark">*</span>
+              </label>
               <select name="bank_account_id" id="bank_account_id" class="form-control">
                 <option value=""><?= h(t('admin.customer_txn.field.bank_placeholder', [], '— Select bank / cash —')) ?></option>
                 <?php foreach ($bankAccounts as $ba): ?>
@@ -1101,7 +1267,7 @@ $uploadBaseUrl = (defined('BASE_URL') ? rtrim((string)BASE_URL, '/') : '') . '/.
               <?php elseif (!$bankAccounts): ?>
                 <div style="font-size:11px;color:#b91c1c;margin-top:4px;"><?= h(t('admin.customer_txn.bank.none', [], 'No bank accounts found in company_bank_accounts.')) ?></div>
               <?php else: ?>
-                <div style="font-size:11px;color:#6b7280;margin-top:4px;"><?= h(t('admin.customer_txn.bank.helper_out', [], 'Choose which bank / cash account this payout is from.')) ?></div>
+                <div style="font-size:11px;color:#6b7280;margin-top:4px;"><?= h(t('admin.customer_txn.bank.helper_out', [], 'Choose this only when the OUT to customer is from a bank / cash account.')) ?></div>
               <?php endif; ?>
             </div>
           </div>
@@ -1365,9 +1531,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const paySourceType  = document.getElementById('pay_source_type');
   const paySourceWrap  = document.getElementById('pay_source_customer_wrap');
+  const payMethodWrap  = document.getElementById('pay_source_method_wrap');
+  const paySourceBankWrap = document.getElementById('pay_source_bank_wrap');
+  const outMethodWrap  = document.getElementById('out_method_wrap');
   const bankWrap       = document.getElementById('bank_block_wrap');
+  const bankReqMark    = document.getElementById('bank_required_mark');
 
   const bankSelect     = document.getElementById('bank_account_id');
+  const paySourceBankSelect = document.getElementById('pay_source_bank_account_id');
   const currencyInput  = document.getElementById('currency_input');
   const fxRateBlock    = document.getElementById('fx_rate_block');
   const fxCcyLabelSpan = document.getElementById('fx_rate_ccy_label');
@@ -1379,12 +1550,19 @@ document.addEventListener('DOMContentLoaded', function () {
     const v = (paySourceType && paySourceType.value) ? paySourceType.value.toUpperCase() : 'BANK';
     if (v === 'CUSTOMER') {
       if (paySourceWrap) paySourceWrap.style.display = '';
-      if (bankWrap) bankWrap.style.display = 'none';
-      if (bankSelect) bankSelect.value = '';
+      if (payMethodWrap) payMethodWrap.style.display = '';
+      if (paySourceBankWrap) paySourceBankWrap.style.display = '';
+      if (outMethodWrap) outMethodWrap.style.display = '';
+      if (bankWrap) bankWrap.style.display = '';
+      if (bankReqMark) bankReqMark.style.display = 'none';
       if (currencyInput) currencyInput.readOnly = false;
     } else {
       if (paySourceWrap) paySourceWrap.style.display = 'none';
+      if (payMethodWrap) payMethodWrap.style.display = 'none';
+      if (paySourceBankWrap) paySourceBankWrap.style.display = 'none';
+      if (outMethodWrap) outMethodWrap.style.display = 'none';
       if (bankWrap) bankWrap.style.display = '';
+      if (bankReqMark) bankReqMark.style.display = '';
     }
     updateCurrencyFromBank();
   }
@@ -1437,16 +1615,25 @@ document.addEventListener('DOMContentLoaded', function () {
 
     const src = (paySourceType && paySourceType.value) ? paySourceType.value.toUpperCase() : 'BANK';
 
-    if (src === 'CUSTOMER') {
-      currencyInput.readOnly = false;
-      updateFxBlockForCurrency();
-      return;
-    }
-
     if (!bankSelect) { currencyInput.readOnly = false; updateFxBlockForCurrency(); return; }
 
     const opt = bankSelect.options[bankSelect.selectedIndex];
-    if (!opt || !opt.value) { currencyInput.readOnly = false; updateFxBlockForCurrency(); return; }
+    if (!opt || !opt.value) {
+      if (src === 'CUSTOMER' && paySourceBankSelect) {
+        const inOpt = paySourceBankSelect.options[paySourceBankSelect.selectedIndex];
+        const inCur = inOpt ? (inOpt.getAttribute('data-currency') || '').toUpperCase() : '';
+        if (inCur) {
+          currencyInput.value = inCur;
+          currencyInput.readOnly = true;
+        } else {
+          currencyInput.readOnly = false;
+        }
+      } else {
+        currencyInput.readOnly = false;
+      }
+      updateFxBlockForCurrency();
+      return;
+    }
 
     const bankCurrency = (opt.getAttribute('data-currency') || '').toUpperCase();
     if (bankCurrency) {
@@ -1459,6 +1646,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   if (bankSelect) bankSelect.addEventListener('change', updateCurrencyFromBank);
+  if (paySourceBankSelect) paySourceBankSelect.addEventListener('change', updateCurrencyFromBank);
   if (currencyInput) currencyInput.addEventListener('input', updateFxBlockForCurrency);
   if (amountInput) amountInput.addEventListener('input', recomputeAmountInBase);
   if (fxRateInput) fxRateInput.addEventListener('input', recomputeAmountInBase);

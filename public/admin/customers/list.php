@@ -159,7 +159,7 @@ $sql = "
     COALESCE(SUM(
       CASE WHEN t.txn_type='IN'
         AND (
-          UPPER(COALESCE(t.in_kind,''))='RETURN'
+          (UPPER(COALESCE(t.in_kind,'')) LIKE '%RETURN%' OR UPPER(COALESCE(t.in_kind,'')) LIKE '%REPAY%')
           OR (
             (COALESCE(t.order_total,0)=0) AND (t.amount>0)
             AND (
@@ -178,6 +178,7 @@ $sql = "
       CASE
         WHEN t.txn_type='IN'
           AND (COALESCE(t.is_contra,0)=0)
+          AND COALESCE(t.notes,'') NOT LIKE '%[POB OUT#%'
           AND UPPER(TRIM(COALESCE(t.status,''))) <> 'CONFIRMED'
           AND UPPER(TRIM(COALESCE(t.doc_flow_status,''))) <> 'REJECTED'
         THEN

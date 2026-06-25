@@ -33,6 +33,14 @@ if (!function_exists('app_ensure_customer_currency_schema')) {
                 $pdo->exec("ALTER TABLE `customers` ADD COLUMN `currency` varchar(10) DEFAULT NULL AFTER `category_id`");
             }
 
+            if (!app_table_has_column($pdo, 'customer_txn', 'pay_source_method')) {
+                $pdo->exec("ALTER TABLE `customer_txn` ADD COLUMN `pay_source_method` varchar(20) DEFAULT NULL AFTER `pay_source_customer_id`");
+            }
+
+            if (!app_table_has_column($pdo, 'customer_txn', 'pay_source_bank_account_id')) {
+                $pdo->exec("ALTER TABLE `customer_txn` ADD COLUMN `pay_source_bank_account_id` int(10) unsigned DEFAULT NULL AFTER `pay_source_method`");
+            }
+
             $pdo->exec("
                 UPDATE `customer_categories`
                    SET `currency` = 'MYR'

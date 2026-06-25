@@ -496,7 +496,17 @@ foreach ($rows as $r) {
     }
 
     $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
-    if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
+    if ($tType === 'OUT' && strtoupper((string)($r['pay_source_type'] ?? '')) === 'CUSTOMER') {
+        $inMethod = strtoupper(trim((string)($r['pay_source_method'] ?? 'OTHER')));
+        if ($inMethod === '') $inMethod = 'OTHER';
+        $inBankId = (int)($r['pay_source_bank_account_id'] ?? 0);
+        $inBank = ($inBankId > 0 && isset($bankAccMap[$inBankId])) ? bank_label($bankAccMap[$inBankId]) : '';
+        $outMethod = strtoupper(trim((string)($r['method'] ?? 'CASH'))) ?: 'CASH';
+        $methodLabel = 'IN: ' . $inMethod . ($inBank !== '' ? ' -> ' . $inBank : '');
+        $methodLabel .= ' / OUT: ' . $outMethod . ($bankLabels ? ' -> ' . implode(' / ', $bankLabels) : '');
+    } elseif ($bankLabels) {
+        $methodLabel = implode(' / ', $bankLabels);
+    }
     if ($methodLabel === '') $methodLabel = '-';
 
     $enrichedRows[] = [

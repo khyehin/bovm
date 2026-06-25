@@ -51,6 +51,7 @@ $hasAddrSnap3    = isset($txnCols['customer_addr3_snapshot']);
 $hasAddrSnapMeta = isset($txnCols['customer_addr_city_state_postcode_snapshot']);
 $hasCanEditFn   = function_exists('can');
 $canEdit        = $hasCanEditFn ? (bool)can('TXN.E') : true;
+$canDelete      = $hasCanEditFn ? (bool)can('TXN.D') : true;
 
 $allCustomers = $pdo->query("SELECT id, name, code FROM customers ORDER BY name ASC, id ASC")->fetchAll();
 $customerMap = [];
@@ -61,16 +62,16 @@ foreach ($allCustomers as $c) {
 $cid = (int)($_GET['customer_id'] ?? $_POST['customer_id'] ?? 0);
 $customer = ($cid > 0 && isset($customerMap[$cid])) ? $customerMap[$cid] : null;
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canEdit) {
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($canEdit || $canDelete)) {
   $action = (string)($_POST['action'] ?? '');
 
-  if ($action === 'create_quotation') {
+  if ($action === 'create_quotation' && $canEdit) {
     $targetCid = (int)($_POST['new_customer_id'] ?? $cid);
     if ($targetCid > 0 && isset($customerMap[$targetCid])) {
       header('Location: ' . url('admin/customers/quotation_edit.php?customer_id=' . $targetCid));
       exit;
     }
-  } elseif ($action === 'set_flow_status') {
+  } elseif ($action === 'set_flow_status' && $canEdit) {
     $txnId = (int)($_POST['txn_id'] ?? 0);
     $next = strtoupper(trim((string)($_POST['next_status'] ?? '')));
     $goEdit = ((int)($_POST['go_edit'] ?? 0) === 1);
@@ -148,14 +149,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $canEdit) {
     if ($backQuery['customer_id'] <= 0) unset($backQuery['customer_id']);
     header('Location: ' . url('admin/customers/invoices.php?' . http_build_query($backQuery)));
     exit;
-  } elseif ($action === 'delete_txn') {
+  } elseif ($action === 'delete_txn' && $canDelete) {
     $txnId = (int)($_POST['txn_id'] ?? 0);
     if ($txnId > 0) {
-      try {
-        // safety: only IN txn
-        $pdo->prepare("DELETE FROM customer_txn WHERE id = :id AND txn_type = 'IN'")->execute([':id' => $txnId]);
-      } catch (Throwable $e) {
+      $deleteCid = (int)($_POST['customer_id'] ?? 0);
+      if ($deleteCid <= 0) {
+        $stDel = $pdo->prepare("SELECT customer_id FROM customer_txn WHERE id = :id AND txn_type = 'IN' LIMIT 1");
+        $stDel->execute([':id' => $txnId]);
+        $deleteCid = (int)$stDel->fetchColumn();
       }
+      $back = (string)($_SERVER['HTTP_REFERER'] ?? url('admin/customers/invoices.php'));
+      header('Location: ' . url('admin/customers/txn_delete.php?id=' . $txnId . '&customer_id=' . $deleteCid . '&back=' . rawurlencode($back)));
+      exit;
     }
     $backQuery = [
       'customer_id' => $cid,
@@ -175,11 +180,12 @@ $date_from = trim((string)($_GET['date_from'] ?? ''));
 $date_to   = trim((string)($_GET['date_to'] ?? ''));
 $date_all  = trim((string)($_GET['date_all'] ?? ''));
 
-$where = ["t.txn_type = 'IN'", "(UPPER(COALESCE(t.in_kind,'')) = '' OR UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%')"];
+$invoiceWhere = "UPPER(COALESCE(t.in_kind,'')) = '' OR UPPER(COALESCE(t.in_kind,'')) LIKE '%INVOICE%'";
+if ($hasDocFlowType) {
+  $invoiceWhere .= " OR UPPER(COALESCE(t.doc_flow_type,'')) = 'QUOTATION'";
+}
+$where = ["t.txn_type = 'IN'", "($invoiceWhere)"];
 $params = [];
-
-// 只看 category_id = 3
-$where[] = "c.category_id = 3";
 
 if ($cid > 0) {
   $where[] = "t.customer_id = :cid";
@@ -486,14 +492,14 @@ include __DIR__ . '/../include/header.php';
               $dfStat = strtoupper((string)($hasDocFlowStat ? ($r['doc_flow_status'] ?? 'DRAFT') : 'DRAFT'));
               if (!in_array($dfStat, ['DRAFT', 'PROCESSING', 'REJECTED', 'COMPLETED'], true)) $dfStat = 'DRAFT';
 
-              $dfTypeLabel = (trim((string)($r['invoice_no'] ?? '')) !== '') ? 'Invoice' : 'Quotation';
+              $dfTypeLabel = ($dfType === 'QUOTATION') ? 'Quotation' : 'Invoice';
               $statusLabel = ($dfStat === 'COMPLETED') ? 'Complete' : ucfirst(strtolower($dfStat));
               $statusStyle = 'background:#e5e7eb;color:#374151;';
               if ($dfStat === 'REJECTED') $statusStyle = 'background:#fee2e2;color:#b91c1c;';
               elseif ($dfStat === 'PROCESSING') $statusStyle = 'background:#dbeafe;color:#1d4ed8;';
               elseif ($dfStat === 'COMPLETED') $statusStyle = 'background:#dcfce7;color:#166534;';
 
-              $isQuotationRow = ($invNo === '');
+              $isQuotationRow = ($dfType === 'QUOTATION' || $invNo === '');
               ?>
               <tr>
                 <td><?= h($dt) ?></td>
@@ -531,6 +537,9 @@ include __DIR__ . '/../include/header.php';
                       <?php if ($dfStat === 'COMPLETED'): ?>
                         <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=DO')) ?>" class="actions-menu-item">View DO</a>
                         <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=QUOTATION')) ?>" class="actions-menu-item">View Quotation</a>
+                        <?php if ($canEdit): ?>
+                          <a href="<?= h(url('admin/customers/quotation_edit.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid)) ?>" class="actions-menu-item">Edit Quotation</a>
+                        <?php endif; ?>
                         <a href="<?= h(url('admin/customers/txn_doc_in.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid . '&doc=INVOICE')) ?>" class="actions-menu-item">View Invoice</a>
 
                         <?php if ($canEdit && $dfStat !== 'REJECTED'): ?>
@@ -544,9 +553,9 @@ include __DIR__ . '/../include/header.php';
                             </button>
                           </form>
                         <?php endif; ?>
-                        <?php if ($canEdit): ?>
+                        <?php if ($canDelete): ?>
                           <form method="post" style="margin:0;">
-                            <input type="hidden" name="customer_id" value="<?= (int)$cid ?>">
+                            <input type="hidden" name="customer_id" value="<?= (int)$rowCid ?>">
                             <input type="hidden" name="action" value="delete_txn">
                             <input type="hidden" name="txn_id" value="<?= (int)$r['id'] ?>">
                             <button type="submit" class="actions-menu-item" style="width:100%;text-align:left;border:none;background:transparent;cursor:pointer;color:#b91c1c;" onclick="return confirm('Delete this transaction?');">
@@ -555,7 +564,7 @@ include __DIR__ . '/../include/header.php';
                           </form>
                         <?php endif; ?>
                       <?php else: ?>
-                        <?php if ($canEdit && trim((string)($r['invoice_no'] ?? '')) === ''): ?>
+                        <?php if ($canEdit && $isQuotationRow): ?>
                           <a href="<?= h(url('admin/customers/quotation_edit.php?id=' . (int)$r['id'] . '&customer_id=' . $rowCid)) ?>" class="actions-menu-item">Edit Quotation</a>
                         <?php endif; ?>
                         <?php if (!$isQuotationRow): ?>
@@ -618,4 +627,3 @@ include __DIR__ . '/../include/header.php';
 </div>
 
 <?php include __DIR__ . '/../include/footer.php'; ?>
-

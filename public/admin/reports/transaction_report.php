@@ -12,6 +12,9 @@ if (function_exists('require_perm')) {
 
 $pdo = get_pdo();
 $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+if (function_exists('app_ensure_customer_currency_schema')) {
+  app_ensure_customer_currency_schema($pdo);
+}
 
 if (!function_exists('h')) {
   function h($v): string {
@@ -179,7 +182,10 @@ if ($allocateOnly) {
               AND p2.bank_account_id = :bank_filter_id
           ))
           OR
-          (x.txn_type = 'OUT' AND COALESCE(x.bank_account_id,0) = :bank_filter_id)
+          (x.txn_type = 'OUT' AND (
+            COALESCE(x.bank_account_id,0) = :bank_filter_id
+            OR COALESCE(x.pay_source_bank_account_id,0) = :bank_filter_id
+          ))
       ))
     )";
   $params[':bank_filter_id'] = $bankFilterId;
@@ -318,6 +324,9 @@ $derivedSql = "
       t.ref_no,
       " . (isset($colsTxn['notes']) ? "t.notes" : "NULL") . " AS notes,
       t.method,
+      t.pay_source_type,
+      " . (isset($colsTxn['pay_source_method']) ? "t.pay_source_method" : "NULL") . " AS pay_source_method,
+      " . (isset($colsTxn['pay_source_bank_account_id']) ? "t.pay_source_bank_account_id" : "NULL") . " AS pay_source_bank_account_id,
       t.bank_account_id,
       t.currency,
       t.order_currency,
@@ -346,6 +355,9 @@ $derivedSql = "
       NULL       AS ref_no,
       NULL       AS notes,
       'BANK'     AS method,
+      NULL       AS pay_source_type,
+      NULL       AS pay_source_method,
+      NULL       AS pay_source_bank_account_id,
       p.bank_account_id,
       COALESCE(NULLIF(t.order_currency,''), t.currency, 'MYR') AS currency,
       t.order_currency,
@@ -792,7 +804,15 @@ $txt_next = $hasT ? t('admin.common.next', [], 'Next') : 'Next';
               }
 
               $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
-              if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
+              if (!$isIn && strtoupper((string)($r['pay_source_type'] ?? '')) === 'CUSTOMER') {
+                $inMethod = strtoupper(trim((string)($r['pay_source_method'] ?? 'OTHER')));
+                if ($inMethod === '') $inMethod = 'OTHER';
+                $inBankId = (int)($r['pay_source_bank_account_id'] ?? 0);
+                $inBank = ($inBankId > 0 && isset($bankAccMap[$inBankId])) ? bank_label($bankAccMap[$inBankId]) : '';
+                $outMethod = strtoupper(trim((string)($r['method'] ?? 'CASH'))) ?: 'CASH';
+                $methodLabel = 'IN: ' . $inMethod . ($inBank !== '' ? ' -> ' . $inBank : '');
+                $methodLabel .= ' / OUT: ' . $outMethod . ($bankLabels ? ' -> ' . implode(' / ', $bankLabels) : '');
+              } elseif ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
               else {
                 $m = strtoupper((string)($r['method'] ?? ''));
                 $methodLabel = $m !== '' ? $m : '-';

@@ -220,17 +220,23 @@ if ($onlyContra) {
   if (isset($txnCols['is_contra'])) $where[] = "(is_contra = 1)";
   else $where[] = "1=0";
 } elseif ($bankFilterId > 0) {
+  $bankFilterParts = [];
   if (!empty($payCols)) {
-    $where[] = "EXISTS (
+    $bankFilterParts[] = "EXISTS (
       SELECT 1
       FROM customer_txn_payments p
       WHERE p.customer_txn_id = customer_txn.id
         AND p.bank_account_id = :bank_filter_id
     )";
-    $params[':bank_filter_id'] = $bankFilterId;
-  } else {
-    $where[] = "1=0";
   }
+  if (isset($txnCols['bank_account_id'])) {
+    $bankFilterParts[] = "COALESCE(customer_txn.bank_account_id,0) = :bank_filter_id";
+  }
+  if (isset($txnCols['pay_source_bank_account_id'])) {
+    $bankFilterParts[] = "COALESCE(customer_txn.pay_source_bank_account_id,0) = :bank_filter_id";
+  }
+  $where[] = $bankFilterParts ? "(" . implode(" OR ", $bankFilterParts) . ")" : "1=0";
+  $params[':bank_filter_id'] = $bankFilterId;
 }
 
 // 🔍 搜索
@@ -439,6 +445,7 @@ foreach ($rows as $r) {
   if ($tType !== 'IN') continue;
 
   if ((int)($r['is_contra'] ?? 0) === 1) continue;
+  if (strpos((string)($r['notes'] ?? ''), '[POB OUT#') !== false) continue;
   if (strtoupper(trim((string)($r['doc_flow_status'] ?? ''))) === 'REJECTED') continue;
   if (strtoupper(trim((string)($r['status'] ?? ''))) === 'CONFIRMED') continue;
 
@@ -920,7 +927,17 @@ include __DIR__ . '/../include/header.php';
               }
 
               $bankLabels = array_values(array_unique(array_filter($bankLabels, 'strlen')));
-              if ($bankLabels) $methodLabel = implode(' / ', $bankLabels);
+              if ($tType === 'OUT' && strtoupper((string)($r['pay_source_type'] ?? '')) === 'CUSTOMER') {
+                $inMethod = strtoupper(trim((string)($r['pay_source_method'] ?? 'OTHER')));
+                if ($inMethod === '') $inMethod = 'OTHER';
+                $inBankId = (int)($r['pay_source_bank_account_id'] ?? 0);
+                $inBank = ($inBankId > 0 && isset($bankAccMap[$inBankId])) ? bank_label($bankAccMap[$inBankId]) : '';
+                $outMethod = strtoupper(trim((string)($r['method'] ?? 'CASH'))) ?: 'CASH';
+                $methodLabel = 'IN: ' . $inMethod . ($inBank !== '' ? ' -> ' . $inBank : '');
+                $methodLabel .= ' / OUT: ' . $outMethod . ($bankLabels ? ' -> ' . implode(' / ', $bankLabels) : '');
+              } elseif ($bankLabels) {
+                $methodLabel = implode(' / ', $bankLabels);
+              }
 
               $displayDate = $r['txn_date'] ?? substr((string)($r['created_at'] ?? ''), 0, 10);
 
@@ -1105,7 +1122,7 @@ include __DIR__ . '/../include/header.php';
                   <?php
                     $tTypeRow = strtoupper(trim((string)($r['txn_type'] ?? '')));
                     $ikRow    = detect_in_kind($r); // INVOICE / BONUS / RETURN
-                    $isInInvoice = ($tTypeRow === 'IN' && $ikRow === 'INVOICE');
+                    $isInInvoice = ($tTypeRow === 'IN' && in_kind_has_part((string)($r['in_kind'] ?? ''), 'INVOICE'));
                     $rowId = (int)$r['id'];
                     $viewUrl = url('admin/customers/txn_view.php?id=' . $rowId . '&customer_id=' . $cid);
                     $editUrl = url('admin/customers/txn_edit.php?id=' . $rowId . '&customer_id=' . $cid);
@@ -1160,7 +1177,7 @@ include __DIR__ . '/../include/header.php';
                         </a>
                       <?php endif; ?>
 
-                      <?php if ($canDelete && $displayStatus !== 'CONFIRMED'): ?>
+                      <?php if ($canDelete): ?>
                         <a href="<?= h(url('admin/customers/txn_delete.php?id=' . (int)$r['id'] . '&customer_id=' . $cid)) ?>"
                           class="actions-menu-item"
                           onclick="return confirm('Delete this transaction?');">
