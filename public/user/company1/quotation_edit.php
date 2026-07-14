@@ -37,6 +37,19 @@ function parse_unit_marker(string $desc): array {
   return ['', $desc];
 }
 
+function normalize_posted_lines(array $postLines = [], ?string $linesJson = null): array {
+  if (is_string($linesJson) && trim($linesJson) !== '') {
+    $decoded = json_decode(trim($linesJson), true);
+    if (is_array($decoded)) {
+      return array_values(array_filter($decoded, static fn($row) => is_array($row)));
+    }
+  }
+  if (is_array($postLines)) {
+    return array_values(array_filter($postLines, static fn($row) => is_array($row)));
+  }
+  return [];
+}
+
 $txnCols = table_columns($pdo, 'customer_txn');
 $hasLines = false;
 try { $pdo->query("SELECT 1 FROM customer_txn_lines LIMIT 1"); $hasLines = true; } catch (Throwable $e) {}
@@ -225,7 +238,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($hasLines) {
       $pdo->prepare("DELETE FROM customer_txn_lines WHERE customer_txn_id=:tid")->execute([':tid'=>$id]);
-      $linePosts = $_POST['lines'] ?? [];
+      $linePosts = normalize_posted_lines($_POST['lines'] ?? [], (string)($_POST['lines_json'] ?? ''));
       $seq=1;
       foreach ($linePosts as $row) {
         $unitLabel = trim((string)($row['unit_label'] ?? ''));
@@ -277,8 +290,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $st->execute();
     $id = (int)$pdo->lastInsertId();
 
-    if ($hasLines && !empty($_POST['lines'])) {
-      $linePosts = $_POST['lines'] ?? [];
+    if ($hasLines) {
+      $linePosts = normalize_posted_lines($_POST['lines'] ?? [], (string)($_POST['lines_json'] ?? ''));
       $seq=1;
       foreach ($linePosts as $row) {
         $unitLabel = trim((string)($row['unit_label'] ?? ''));
@@ -360,12 +373,22 @@ include __DIR__ . '/../include/header.php';
       </div>
 
       <?php if (!empty($_GET['ok'])): ?>
-        <div class="alert-success" style="margin-bottom:12px;">Quotation saved.</div>
+        <?php
+          $savedLineCount = 0;
+          if ($hasLines && is_array($lines)) {
+            $savedLineCount = count($lines);
+          }
+          $saveNotice = $savedLineCount > 0
+            ? 'Quotation saved. ' . $savedLineCount . ' line item(s) stored.'
+            : 'Quotation saved. No line items were posted.';
+        ?>
+        <div class="alert-success" style="margin-bottom:12px;"><?= h($saveNotice) ?></div>
       <?php endif; ?>
 
-      <form method="post" class="quotation-form">
+      <form method="post" class="quotation-form" id="quotationForm">
         <input type="hidden" name="customer_id" value="<?= (int)$cid ?>">
         <input type="hidden" name="id" value="<?= (int)$id ?>">
+        <input type="hidden" name="lines_json" id="linesJson" value="">
 
         <div class="form-grid form-grid-2" style="margin-bottom:16px;">
           <div>
@@ -509,6 +532,8 @@ include __DIR__ . '/../include/header.php';
   var totalDiscount = document.getElementById('totalDiscount');
   var orderTotal = document.getElementById('orderTotal');
   var grandTotal = document.getElementById('grandTotal');
+  var form = document.getElementById('quotationForm');
+  var linesJson = document.getElementById('linesJson');
 
   function lineIndex() { return (lineBody.querySelectorAll('tr').length + 1); }
   function recalc() {
@@ -522,6 +547,27 @@ include __DIR__ . '/../include/header.php';
     if (orderTotal) orderTotal.value = grand.toFixed(2);
     if (grandTotal) grandTotal.textContent = grand.toFixed(2);
   }
+  function serializeLines() {
+    var rows = [];
+    lineBody.querySelectorAll('tr').forEach(function(tr){
+      var desc = (tr.querySelector('.line-desc') || {}).value || '';
+      var qty = (tr.querySelector('.line-qty') || {}).value || '';
+      var unitLabel = (tr.querySelector('.line-unitlabel') || {}).value || '';
+      var unit = (tr.querySelector('.line-unit') || {}).value || '';
+      var amt = (tr.querySelector('.line-amount') || {}).value || '';
+      var hasValue = desc.trim() !== '' || qty.trim() !== '' || unitLabel.trim() !== '' || unit.trim() !== '' || amt.trim() !== '';
+      if (!hasValue) return;
+      rows.push({
+        description: desc,
+        quantity: qty,
+        unit_label: unitLabel,
+        unit_price: unit,
+        amount: amt
+      });
+    });
+    if (linesJson) linesJson.value = JSON.stringify(rows);
+  }
+
   function bindLine(tr) {
     var qty = tr.querySelector('.line-qty');
     var unit = tr.querySelector('.line-unit');
@@ -536,15 +582,18 @@ include __DIR__ . '/../include/header.php';
         recalc();
       }
     }
-    if (qty) qty.addEventListener('input', updateAmount);
-    if (unit) unit.addEventListener('input', updateAmount);
-    if (amt) amt.addEventListener('input', recalc);
+    if (qty) qty.addEventListener('input', function(){ updateAmount(); serializeLines(); });
+    if (unit) unit.addEventListener('input', function(){ updateAmount(); serializeLines(); });
+    if (amt) amt.addEventListener('input', function(){ recalc(); serializeLines(); });
+    var desc = tr.querySelector('.line-desc');
+    if (desc) desc.addEventListener('input', serializeLines);
   }
 
   lineBody.querySelectorAll('tr').forEach(bindLine);
   if (totalDiscount) totalDiscount.addEventListener('input', recalc);
   recalc();
 
+  if (form) form.addEventListener('submit', serializeLines);
   if (btnAddLine) {
     btnAddLine.addEventListener('click', function(){
       var idx = lineIndex();
@@ -559,8 +608,10 @@ include __DIR__ . '/../include/header.php';
         '<td><input type="number" step="0.01" min="0" name="lines[' + idx + '][amount]" class="form-control line-amount text-right" value="" placeholder=""></td>';
       lineBody.appendChild(tr);
       bindLine(tr);
+      serializeLines();
     });
   }
+  serializeLines();
 })();
 </script>
 
