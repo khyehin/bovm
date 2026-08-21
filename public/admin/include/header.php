@@ -39,6 +39,7 @@ $appTitle = function_exists('t')
 
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>bo.vm <?= h($appTitle) ?> - <?= h($page_title) ?></title>
 
   <!-- admin theme -->

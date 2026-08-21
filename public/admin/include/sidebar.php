@@ -34,6 +34,15 @@ $hasT = function_exists('t');
       </a>
     </div>
 
+    <!-- CASHFLOW -->
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">CASHFLOW</div>
+      <a href="<?= h(url('admin/cashflow/index.php')) ?>"
+         class="sidebar-link<?= nav_active('/admin/cashflow/', $currentPath) ?>">
+        <?= h($hasT ? t('admin.nav.cashflow', [], 'Cashflow') : 'Cashflow') ?>
+      </a>
+    </div>
+
     <!-- REPORTS -->
     <div class="sidebar-section">
       <div class="sidebar-section-title">

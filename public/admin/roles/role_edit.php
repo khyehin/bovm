@@ -111,6 +111,12 @@ $ALL_PERMS = [
   // 报表
   'REPORT.V'            => 'View reports',
 
+  // Cashflow
+  'CASHFLOW.V'          => 'View cashflow',
+  'CASHFLOW.E'          => 'Create / edit cashflow rows and columns',
+  'CASHFLOW.D'          => 'Delete cashflow rows and columns',
+  'CASHFLOW.EXPORT'     => 'Export cashflow',
+
   // Admin users & roles
   'USER.MNG'            => 'Manage admin users',
   'ROLE.MNG'            => 'Manage roles & permissions',
@@ -152,6 +158,12 @@ $PERM_GROUPS = [
     'BANK.TXN.E',
     'BANK.STMT.V',
     'BANK.STMT.E',
+  ],
+  'Cashflow' => [
+    'CASHFLOW.V',
+    'CASHFLOW.E',
+    'CASHFLOW.D',
+    'CASHFLOW.EXPORT',
   ],
   'Admin & Roles' => [
     'USER.MNG',
